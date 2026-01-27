@@ -297,12 +297,12 @@ export class USDAChatbotStack extends cdk.Stack {
     // ==================== Amplify Hosting ====================
     // Note: You need to create a GitHub token secret in Secrets Manager first
     // aws secretsmanager create-secret --name github-token --secret-string "your-github-token"
-    const githubToken = secretsmanager.Secret.fromSecretNameV2(this, 'GitHubToken', 'github-token');
+    const githubToken = secretsmanager.Secret.fromSecretNameV2(this, 'GitHubToken', 'usda-token');
 
     const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
       name: 'AskUSDA-Frontend',
       description: 'AskUSDA Chatbot Frontend',
-      repository: 'https://github.com/YOUR_ORG/AskUSDA', // Update with your repo
+      repository: 'https://github.com/ASUCICREPO/AskUSDA', // Update with your repo
       accessToken: githubToken.secretValue.unsafeUnwrap(),
       platform: 'WEB_COMPUTE',
       environmentVariables: [
