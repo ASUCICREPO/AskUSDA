@@ -5,10 +5,10 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as opensearchserverless from 'aws-cdk-lib/aws-opensearchserverless';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as amplify from 'aws-cdk-lib/aws-amplify';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -30,92 +30,72 @@ export class USDAChatbotStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // ==================== OpenSearch Serverless Collection ====================
-    const collectionName = 'askusda-vectors';
-
-    // Encryption policy (required for serverless)
-    const encryptionPolicy = new opensearchserverless.CfnSecurityPolicy(this, 'EncryptionPolicy', {
-      name: 'askusda-encryption',
-      type: 'encryption',
-      policy: JSON.stringify({
-        Rules: [{ ResourceType: 'collection', Resource: [`collection/${collectionName}`] }],
-        AWSOwnedKey: true,
-      }),
-    });
-
-    // Network policy
-    const networkPolicy = new opensearchserverless.CfnSecurityPolicy(this, 'NetworkPolicy', {
-      name: 'askusda-network',
-      type: 'network',
-      policy: JSON.stringify([{
-        Rules: [
-          { ResourceType: 'collection', Resource: [`collection/${collectionName}`] },
-          { ResourceType: 'dashboard', Resource: [`collection/${collectionName}`] },
-        ],
-        AllowFromPublic: true,
-      }]),
-    });
-
-
-    // OpenSearch Serverless Collection
-    const opensearchCollection = new opensearchserverless.CfnCollection(this, 'VectorCollection', {
-      name: collectionName,
-      type: 'VECTORSEARCH',
+    // ==================== OpenSearch Serverless Vector Collection (L2 Construct) ====================
+    // Using @cdklabs/generative-ai-cdk-constructs which automatically handles:
+    // - Encryption policy
+    // - Network policy  
+    // - Data access policy
+    const vectorCollection = new opensearchserverless.VectorCollection(this, 'VectorCollection', {
+      collectionName: 'askusda-vectors',
       description: 'Vector store for AskUSDA Knowledge Base',
+      standbyReplicas: opensearchserverless.VectorCollectionStandbyReplicas.DISABLED, // Cost optimization
     });
-    opensearchCollection.addDependency(encryptionPolicy);
-    opensearchCollection.addDependency(networkPolicy);
+
+    // ==================== OpenSearch Vector Index (L2 Construct) ====================
+    // This automatically creates the index with proper mappings for Bedrock Knowledge Base
+    const vectorIndex = new opensearch_vectorindex.VectorIndex(this, 'VectorIndex', {
+      collection: vectorCollection,
+      indexName: 'askusda-index',
+      vectorDimensions: 1024, // Amazon Titan Embed Text v2 dimension
+      vectorField: 'vector',
+      precision: 'float',
+      distanceType: 'l2',
+      mappings: [
+        {
+          mappingField: 'text',
+          dataType: 'text',
+          filterable: true,
+        },
+        {
+          mappingField: 'metadata',
+          dataType: 'text',
+          filterable: false,
+        },
+        {
+          mappingField: 'AMAZON_BEDROCK_TEXT_CHUNK',
+          dataType: 'text',
+          filterable: true,
+        },
+        {
+          mappingField: 'AMAZON_BEDROCK_METADATA',
+          dataType: 'text',
+          filterable: false,
+        },
+      ],
+    });
 
     // ==================== IAM Role for Bedrock Knowledge Base ====================
     const knowledgeBaseRole = new iam.Role(this, 'KnowledgeBaseRole', {
       assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
-      inlinePolicies: {
-        OpenSearchServerlessAccess: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['aoss:APIAccessAll'],
-              resources: [`arn:aws:aoss:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:collection/*`],
-            }),
-          ],
-        }),
-        BedrockModelAccess: new iam.PolicyDocument({
-          statements: [
-            new iam.PolicyStatement({
-              effect: iam.Effect.ALLOW,
-              actions: ['bedrock:InvokeModel'],
-              resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`],
-            }),
-          ],
-        }),
-      },
+      description: 'IAM role for AskUSDA Knowledge Base',
     });
 
-    // Data access policy for OpenSearch Serverless
-    const dataAccessPolicy = new opensearchserverless.CfnAccessPolicy(this, 'DataAccessPolicy', {
-      name: 'askusda-data-access',
-      type: 'data',
-      policy: JSON.stringify([{
-        Rules: [
-          {
-            ResourceType: 'collection',
-            Resource: [`collection/${collectionName}`],
-            Permission: ['aoss:CreateCollectionItems', 'aoss:UpdateCollectionItems', 'aoss:DescribeCollectionItems'],
-          },
-          {
-            ResourceType: 'index',
-            Resource: [`index/${collectionName}/*`],
-            Permission: [
-              'aoss:CreateIndex', 'aoss:UpdateIndex', 'aoss:DescribeIndex',
-              'aoss:ReadDocument', 'aoss:WriteDocument',
-            ],
-          },
-        ],
-        Principal: [knowledgeBaseRole.roleArn, `arn:aws:iam::${cdk.Aws.ACCOUNT_ID}:root`],
-      }]),
-    });
-    dataAccessPolicy.addDependency(opensearchCollection);
+    // Grant full Bedrock access for Knowledge Base operations
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:*'],
+      resources: ['*'],
+    }));
 
+    // Grant data access to the OpenSearch Serverless collection
+    vectorCollection.grantDataAccess(knowledgeBaseRole);
+
+    // Add OpenSearch Serverless API permissions for Knowledge Base
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['aoss:APIAccessAll'],
+      resources: [vectorCollection.collectionArn],
+    }));
 
     // ==================== Bedrock Knowledge Base ====================
     const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'USDAKnowledgeBase', {
@@ -131,17 +111,28 @@ export class USDAChatbotStack extends cdk.Stack {
       storageConfiguration: {
         type: 'OPENSEARCH_SERVERLESS',
         opensearchServerlessConfiguration: {
-          collectionArn: opensearchCollection.attrArn,
-          vectorIndexName: 'askusda-index',
+          collectionArn: vectorCollection.collectionArn,
+          vectorIndexName: vectorIndex.indexName,
           fieldMapping: {
-            vectorField: 'vector',
-            textField: 'text',
-            metadataField: 'metadata',
+            vectorField: vectorIndex.vectorField,
+            textField: 'AMAZON_BEDROCK_TEXT_CHUNK',
+            metadataField: 'AMAZON_BEDROCK_METADATA',
           },
         },
       },
     });
-    knowledgeBase.node.addDependency(dataAccessPolicy);
+
+    // Ensure knowledge base is created after vector index
+    knowledgeBase.node.addDependency(vectorIndex);
+
+    // Add explicit dependency on the IAM role's default policy
+    const defaultPolicyConstruct = knowledgeBaseRole.node.tryFindChild('DefaultPolicy');
+    if (defaultPolicyConstruct) {
+      const cfnPolicy = defaultPolicyConstruct.node.defaultChild as cdk.CfnResource;
+      if (cfnPolicy) {
+        knowledgeBase.addDependency(cfnPolicy);
+      }
+    }
 
     // Web Crawler Data Source
     const webCrawlerDataSource = new bedrock.CfnDataSource(this, 'WebCrawlerDataSource', {
@@ -167,6 +158,8 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
 
+    // Ensure data source is created after knowledge base
+    webCrawlerDataSource.addDependency(knowledgeBase);
 
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
@@ -199,7 +192,7 @@ export class USDAChatbotStack extends cdk.Stack {
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['aoss:APIAccessAll'],
-      resources: [`arn:aws:aoss:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:collection/*`],
+      resources: [vectorCollection.collectionArn],
     }));
 
     // API Gateway Management permissions
@@ -221,7 +214,7 @@ export class USDAChatbotStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         CONVERSATION_TABLE: conversationLogsTable.tableName,
-        OPENSEARCH_ENDPOINT: opensearchCollection.attrCollectionEndpoint,
+        OPENSEARCH_ENDPOINT: vectorCollection.collectionEndpoint,
         BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
         EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
@@ -360,7 +353,7 @@ frontend:
     });
 
     new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', {
-      value: opensearchCollection.attrCollectionEndpoint,
+      value: vectorCollection.collectionEndpoint,
       description: 'OpenSearch Serverless Collection Endpoint',
       exportName: 'AskUSDA-OpenSearchEndpoint',
     });
