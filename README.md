@@ -1,6 +1,6 @@
-# [INSERT_PROJECT_NAME]
+# AskUSDA - USDA Chatbot
 
-[INSERT_PROJECT_DESCRIPTION - 2-3 sentences describing what the project does, who it's for, and the key problem it solves]
+AskUSDA is an AI-powered chatbot and admin dashboard that helps the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It uses AWS Bedrock Knowledge Bases, a serverless backend, and a modern Next.js frontend with a hover-over chatbot experience.
 
 ---
 
@@ -8,7 +8,7 @@
 
 ![User Interface Demo](./docs/media/user-interface.gif)
 
-> **[PLACEHOLDER]** Please provide a GIF or screenshot of the application interface and save it as `docs/media/user-interface.gif`
+> Please provide a GIF or screenshot of the application interface and save it as `docs/media/user-interface.gif`.
 
 ---
 
@@ -29,17 +29,18 @@
 
 ## High Level Architecture
 
-[INSERT_ARCHITECTURE_OVERVIEW - Brief paragraph explaining the architecture, how components interact, and the overall system design]
+AskUSDA uses a fully serverless architecture on AWS. A Next.js frontend (hosted on AWS Amplify) exposes a hover-over chatbot for end users and an `/admin` dashboard for analysts. The frontend connects to a WebSocket API Gateway and Lambda function for real-time chat, and to an HTTP API + Lambda for admin metrics, feedback, and escalation management. Conversation logs, feedback, and escalations are stored in DynamoDB, while AWS Bedrock (Nova Pro) and a Bedrock Knowledge Base backed by OpenSearch provide retrieval-augmented generation over USDA.gov content.
 
 ![Architecture Diagram](./docs/media/architecture.png)
 
-> **[PLACEHOLDER]** Please create and provide an architecture diagram showing:
-> - All major components/services
-> - Data flow between components
-> - User interaction points
-> - External services/APIs
+> The architecture diagram should show:
+> - Frontend (Next.js on Amplify) and hover-over chatbot
+> - WebSocket API Gateway, Admin HTTP API Gateway, and Lambda functions
+> - DynamoDB tables for `AskUSDA-ConversationLogs` and `AskUSDA-EscalationRequests`
+> - AWS Bedrock models and Knowledge Base backed by OpenSearch Serverless
+> - Optional Cognito authentication for the admin dashboard
 > 
-> Save the diagram as `docs/media/architecture.png` (or .jpeg/.jpg)
+> Save the diagram as `docs/media/architecture.png` (or .jpeg/.jpg).
 
 For a detailed explanation of the architecture, see the [Architecture Deep Dive](./docs/architectureDeepDive.md).
 
@@ -50,9 +51,9 @@ For a detailed explanation of the architecture, see the [Architecture Deep Dive]
 For complete deployment instructions, see the [Deployment Guide](./docs/deploymentGuide.md).
 
 **Quick Start:**
-1. [INSERT_QUICK_START_STEP_1]
-2. [INSERT_QUICK_START_STEP_2]
-3. [INSERT_QUICK_START_STEP_3]
+1. Deploy the backend CDK stack from the `backend/` folder (this creates the WebSocket API, Admin API, DynamoDB tables, Bedrock integrations, and required IAM roles).
+2. Configure the frontend `.env.local` with `NEXT_PUBLIC_WEBSOCKET_URL` and `NEXT_PUBLIC_ADMIN_API_URL` using the outputs from the CDK deployment.
+3. Deploy the frontend from the `frontend/` folder (e.g., via AWS Amplify Hosting) and open the main page to start chatting with AskUSDA.
 
 ---
 
@@ -80,21 +81,24 @@ For developers looking to extend or modify this project, see the [Modification G
 ├── backend/
 │   ├── bin/
 │   │   └── backend.ts
-│   ├── lambda/
-│   │   └── [INSERT_LAMBDA_FUNCTIONS]
+│   ├── lambda-bundle/
+│   │   ├── index.js               # WebSocket chatbot Lambda bundle
+│   │   └── admin.js               # Admin API Lambda bundle
 │   ├── lib/
 │   │   └── backend-stack.ts
-│   ├── agent/
-│   │   └── [INSERT_AGENT_FILES]
 │   ├── cdk.json
 │   ├── package.json
 │   └── tsconfig.json
 ├── frontend/
 │   ├── app/
 │   │   ├── layout.tsx
-│   │   ├── page.tsx
+│   │   ├── page.tsx               # Main page with background and hover chatbot
+│   │   ├── admin/page.tsx         # Admin dashboard for metrics, feedback, escalations
+│   │   ├── components/ChatBot.tsx # Hover-over chatbot UI and WebSocket client
 │   │   └── globals.css
 │   ├── public/
+│   │   ├── usda-bg.png            # USDA website background image
+│   │   └── usda-symbol.svg        # USDA logo used in UI
 │   └── package.json
 ├── docs/
 │   ├── architectureDeepDive.md
@@ -113,9 +117,8 @@ For developers looking to extend or modify this project, see the [Modification G
 
 1. **backend/** - Contains all backend infrastructure and serverless functions
    - `bin/` - CDK app entry point
-   - `lambda/` - AWS Lambda function handlers
+   - `lambda-bundle/` - Bundled AWS Lambda handlers for WebSocket chat and admin APIs
    - `lib/` - CDK stack definitions
-   - `agent/` - [INSERT_AGENT_DESCRIPTION]
 
 2. **frontend/** - Next.js frontend application
    - `app/` - Next.js App Router pages and layouts
@@ -130,11 +133,15 @@ For developers looking to extend or modify this project, see the [Modification G
 
 This application was developed by:
 
-- <a href="[INSERT_LINKEDIN_URL]" target="_blank">[INSERT_CONTRIBUTOR_NAME_1]</a>
-- <a href="[INSERT_LINKEDIN_URL]" target="_blank">[INSERT_CONTRIBUTOR_NAME_2]</a>
-- <a href="[INSERT_LINKEDIN_URL]" target="_blank">[INSERT_CONTRIBUTOR_NAME_3]</a>
+**Associate Cloud Developers:**
 
-[INSERT_ADDITIONAL_ACKNOWLEDGMENTS - Teams, supporters, or organizations to acknowledge]
+- <a href="https://www.linkedin.com/in/sreeram-sreedhar/" target="_blank">Sreeram Sreedhar</a>
+- <a href="https://www.linkedin.com/in/shaashvatm156/" target="_blank">Shaashvat Mittal </a>
+
+**UI/UX Designer:**
+- <a href="https://www.linkedin.com/in/ashik-tharakan/" target="_blank">Ashik Mathew Tharakan</a>
+
+Built in collaboration with the ASU Cloud Innovation Center and USDA stakeholders.
 
 ---
 
