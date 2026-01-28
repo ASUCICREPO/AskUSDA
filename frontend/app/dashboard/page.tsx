@@ -21,25 +21,31 @@ interface ConversationMessage {
 }
 
 interface FeedbackConversation {
-  id: string;
+  conversationId: string;
   sessionId: string;
   question: string;
-  feedback: "positive" | "negative" | "neutral";
-  module: string;
+  answerPreview: string;
+  feedback: "pos" | "neg" | null;
   timestamp: string;
-  conversation: ConversationMessage[];
+  date: string;
+  responseTimeMs?: number;
 }
 
 interface Metrics {
   totalConversations: number;
-  totalMessages: number;
-  escalations: number;
-  feedback: {
-    positive: number;
-    negative: number;
-    neutral: number;
-    total: number;
-  };
+  conversationsToday: number;
+  totalFeedback: number;
+  positiveFeedback: number;
+  negativeFeedback: number;
+  noFeedback: number;
+  satisfactionRate: number;
+  avgResponseTimeMs: number;
+  conversationsByDay: Array<{
+    date: string;
+    count: number;
+    dayName: string;
+    label: string;
+  }>;
 }
 
 const ADMIN_API_URL = process.env.NEXT_PUBLIC_ADMIN_API_URL || "";
@@ -71,23 +77,23 @@ const statsIcons = {
 };
 
 const feedbackColors = {
-  positive: "bg-green-100 text-green-800",
-  negative: "bg-red-100 text-red-800",
-  neutral: "bg-gray-100 text-gray-800",
+  pos: "bg-green-100 text-green-800",
+  neg: "bg-red-100 text-red-800",
+  null: "bg-gray-100 text-gray-800",
 };
 
 const feedbackIcons = {
-  positive: (
+  pos: (
     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
     </svg>
   ),
-  negative: (
+  neg: (
     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
     </svg>
   ),
-  neutral: (
+  null: (
     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="10" />
       <line x1="8" y1="12" x2="16" y2="12" />
@@ -142,8 +148,8 @@ export default function AdminPage() {
 
       // Fetch all data in parallel
       const [metricsRes, feedbackRes, escalationsRes] = await Promise.all([
-        fetch(`${ADMIN_API_URL}/metrics`, { headers }),
-        fetch(`${ADMIN_API_URL}/feedback`, { headers }),
+        fetch(`${ADMIN_API_URL}/metrics?days=7`, { headers }),
+        fetch(`${ADMIN_API_URL}/feedback?limit=20`, { headers }),
         fetch(`${ADMIN_API_URL}/escalations`, { headers }),
       ]);
 
@@ -165,8 +171,8 @@ export default function AdminPage() {
       ]);
 
       setMetrics(metricsData);
-      setFeedbackConversations(feedbackData);
-      setEscalationRequests(escalationsData);
+      setFeedbackConversations(feedbackData.conversations || []);
+      setEscalationRequests(escalationsData.escalations || []);
     } catch (err) {
       console.error("Error fetching admin data:", err);
       setError(err instanceof Error ? err.message : "Failed to load data");
@@ -206,7 +212,10 @@ export default function AdminPage() {
   const filteredRequests = escalationRequests;
 
   const filteredFeedback = feedbackConversations.filter((conv) => {
-    const matchesFeedback = feedbackFilter === "all" || conv.feedback === feedbackFilter;
+    const matchesFeedback = feedbackFilter === "all" || 
+                           (feedbackFilter === "positive" && conv.feedback === "pos") ||
+                           (feedbackFilter === "negative" && conv.feedback === "neg") ||
+                           (feedbackFilter === "none" && !conv.feedback);
     return matchesFeedback;
   });
 
@@ -215,27 +224,27 @@ export default function AdminPage() {
     {
       label: "Total Conversations",
       value: metrics?.totalConversations?.toString() || "0",
-      change: "--",
+      change: metrics?.conversationsToday ? `+${metrics.conversationsToday} today` : "--",
       changeType: "positive" as const,
       icon: statsIcons.conversations,
     },
     {
       label: "Total Upvotes",
-      value: metrics?.feedback?.positive?.toString() || "0",
-      change: "--",
+      value: metrics?.positiveFeedback?.toString() || "0",
+      change: metrics?.satisfactionRate ? `${metrics.satisfactionRate}% satisfaction` : "--",
       changeType: "positive" as const,
       icon: statsIcons.upvotes,
     },
     {
       label: "Total Downvotes",
-      value: metrics?.feedback?.negative?.toString() || "0",
-      change: "--",
-      changeType: "positive" as const,
+      value: metrics?.negativeFeedback?.toString() || "0",
+      change: metrics?.totalFeedback ? `${metrics.totalFeedback} total feedback` : "--",
+      changeType: "negative" as const,
       icon: statsIcons.downvotes,
     },
     {
       label: "Escalations",
-      value: metrics?.escalations?.toString() || "0",
+      value: escalationRequests.length.toString(),
       change: "--",
       changeType: "positive" as const,
       icon: statsIcons.escalations,
@@ -390,6 +399,35 @@ export default function AdminPage() {
           ))}
         </div>
 
+        {/* Conversations Chart */}
+        {metrics?.conversationsByDay && metrics.conversationsByDay.length > 0 && (
+          <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-lg font-semibold text-gray-900">Daily Conversations</h3>
+            <div className="h-64 flex items-end justify-between gap-2">
+              {metrics.conversationsByDay.map((day, index) => {
+                const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count));
+                const height = maxCount > 0 ? (day.count / maxCount) * 100 : 0;
+                
+                return (
+                  <div key={index} className="flex-1 flex flex-col items-center">
+                    <div className="w-full bg-gray-100 rounded-t relative" style={{ height: '200px' }}>
+                      <div 
+                        className="absolute bottom-0 w-full bg-[#002d72] rounded-t transition-all duration-300 hover:bg-[#1a4a8a]"
+                        style={{ height: `${height}%` }}
+                        title={`${day.count} conversations on ${day.date}`}
+                      />
+                    </div>
+                    <div className="mt-2 text-center">
+                      <p className="text-xs font-medium text-gray-900">{day.count}</p>
+                      <p className="text-xs text-gray-500">{day.label}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Escalation Requests Table */}
         <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
@@ -522,7 +560,7 @@ export default function AdminPage() {
                 <option value="all">All Feedback</option>
                 <option value="positive">Positive</option>
                 <option value="negative">Negative</option>
-                <option value="neutral">Neutral</option>
+                <option value="none">No Feedback</option>
               </select>
             </div>
           </div>
@@ -554,7 +592,7 @@ export default function AdminPage() {
                   </tr>
                 ) : (
                   filteredFeedback.map((conv) => (
-                    <tr key={conv.id} className="transition-colors hover:bg-gray-50">
+                    <tr key={conv.conversationId} className="transition-colors hover:bg-gray-50">
                       <td className="whitespace-nowrap px-6 py-4">
                         <span className="font-mono text-sm text-gray-600">{conv.sessionId.substring(0, 12)}...</span>
                       </td>
@@ -568,10 +606,10 @@ export default function AdminPage() {
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
                         <span
-                          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[conv.feedback]}`}
+                          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[conv.feedback || 'null']}`}
                         >
-                          {feedbackIcons[conv.feedback]}
-                          {conv.feedback.charAt(0).toUpperCase() + conv.feedback.slice(1)}
+                          {feedbackIcons[conv.feedback || 'null']}
+                          {conv.feedback ? conv.feedback.toUpperCase() : 'None'}
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
@@ -629,10 +667,10 @@ export default function AdminPage() {
               </div>
               <div className="flex items-center gap-3">
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[selectedConversation.feedback]}`}
+                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[selectedConversation.feedback || 'null']}`}
                 >
-                  {feedbackIcons[selectedConversation.feedback]}
-                  {selectedConversation.feedback.charAt(0).toUpperCase() + selectedConversation.feedback.slice(1)}
+                  {feedbackIcons[selectedConversation.feedback || 'null']}
+                  {selectedConversation.feedback ? selectedConversation.feedback.toUpperCase() : 'None'}
                 </span>
                 <button
                   onClick={() => setSelectedConversation(null)}
@@ -649,104 +687,26 @@ export default function AdminPage() {
             {/* Modal Body - Conversation */}
             <div className="max-h-[60vh] overflow-y-auto bg-gray-50 p-4">
               <div className="space-y-4">
-                {selectedConversation.conversation && selectedConversation.conversation.length > 0 ? (
-                  selectedConversation.conversation.map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                    >
-                      <div
-                        className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-3 ${
-                          msg.role === "user"
-                            ? "bg-[#002d72] text-white"
-                            : "bg-white text-gray-800 shadow-sm"
-                        }`}
-                      >
-                        <div
-                          className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
-                            msg.role === "user"
-                              ? "prose-invert prose-p:text-white prose-a:text-blue-200"
-                              : "prose-gray prose-a:text-[#002d72]"
-                          }`}
-                        >
-                          <ReactMarkdown
-                            components={{
-                              a: ({ href, children }) => (
-                                <a
-                                  href={href}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className={`underline hover:opacity-80 ${
-                                    msg.role === "user"
-                                      ? "text-blue-200"
-                                      : "text-[#002d72]"
-                                  }`}
-                                >
-                                  {children}
-                                </a>
-                              ),
-                              p: ({ children }) => (
-                                <p className="mb-2 last:mb-0 text-sm leading-relaxed">
-                                  {children}
-                                </p>
-                              ),
-                              ul: ({ children }) => (
-                                <ul className="mb-2 ml-4 list-disc space-y-1 text-sm">
-                                  {children}
-                                </ul>
-                              ),
-                              ol: ({ children }) => (
-                                <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm">
-                                  {children}
-                                </ol>
-                              ),
-                              li: ({ children }) => (
-                                <li className="leading-relaxed">{children}</li>
-                              ),
-                              strong: ({ children }) => (
-                                <strong className="font-semibold">{children}</strong>
-                              ),
-                              h1: ({ children }) => (
-                                <h1 className="mb-2 text-base font-bold">{children}</h1>
-                              ),
-                              h2: ({ children }) => (
-                                <h2 className="mb-2 text-sm font-bold">{children}</h2>
-                              ),
-                              h3: ({ children }) => (
-                                <h3 className="mb-1 text-sm font-semibold">{children}</h3>
-                              ),
-                              code: ({ children }) => (
-                                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-800">
-                                  {children}
-                                </code>
-                              ),
-                            }}
-                          >
-                            {msg.content}
-                          </ReactMarkdown>
-                        </div>
-                        <p
-                          className={`mt-2 text-xs ${
-                            msg.role === "user" ? "text-white/60" : "text-gray-400"
-                          }`}
-                        >
-                          {new Date(msg.timestamp).toLocaleTimeString("en-US", {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-8 text-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-gray-300">
-                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    </svg>
-                    <p className="text-sm text-gray-500">Conversation details not available</p>
-                    <p className="mt-1 text-xs text-gray-400">The original messages may have expired</p>
+                {/* Question */}
+                <div className="flex justify-end">
+                  <div className="max-w-[85%] overflow-hidden rounded-2xl bg-[#002d72] text-white px-4 py-3">
+                    <p className="text-sm leading-relaxed">{selectedConversation.question}</p>
                   </div>
-                )}
+                </div>
+                
+                {/* Answer */}
+                <div className="flex justify-start">
+                  <div className="max-w-[85%] overflow-hidden rounded-2xl bg-white text-gray-800 shadow-sm px-4 py-3">
+                    <div className="prose prose-sm max-w-none overflow-wrap-anywhere prose-gray prose-a:text-[#002d72]">
+                      <ReactMarkdown>{selectedConversation.answerPreview}</ReactMarkdown>
+                    </div>
+                    {selectedConversation.responseTimeMs && (
+                      <p className="mt-2 text-xs text-gray-400">
+                        Response time: {(selectedConversation.responseTimeMs / 1000).toFixed(1)}s
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -754,7 +714,7 @@ export default function AdminPage() {
             <div className="border-t border-gray-200 bg-white px-6 py-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-gray-500">
-                  {selectedConversation.conversation?.length || 0} messages in conversation
+                  Conversation ID: {selectedConversation.conversationId}
                 </p>
                 <button
                   onClick={() => setSelectedConversation(null)}

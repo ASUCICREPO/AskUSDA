@@ -14,19 +14,35 @@ export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // ==================== DynamoDB - Conversation Logs ====================
-    const conversationLogsTable = new dynamodb.Table(this, 'ConversationLogs', {
-      tableName: 'AskUSDA-ConversationLogs',
-      partitionKey: { name: 'connectionId', type: dynamodb.AttributeType.STRING },
+    // ==================== DynamoDB - Conversation History ====================
+    // Table to store conversation history for analytics and admin dashboard
+    const conversationHistoryTable = new dynamodb.Table(this, 'ConversationHistory', {
+      tableName: 'AskUSDA-ConversationHistory',
+      partitionKey: { name: 'conversationId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
     });
 
-    conversationLogsTable.addGlobalSecondaryIndex({
-      indexName: 'SessionIndex',
+    // GSI for querying by sessionId
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'sessionId-timestamp-index',
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for querying by date (for admin dashboard analytics)
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'date-timestamp-index',
+      partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for querying by feedback status
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'feedback-timestamp-index',
+      partitionKey: { name: 'feedback', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
@@ -186,7 +202,7 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     });
 
-    conversationLogsTable.grantReadWriteData(lambdaRole);
+    conversationHistoryTable.grantReadWriteData(lambdaRole);
 
     // Bedrock permissions - Nova Pro & Titan Embeddings
     lambdaRole.addToPolicy(new iam.PolicyStatement({
@@ -225,12 +241,13 @@ export class USDAChatbotStack extends cdk.Stack {
       functionName: 'AskUSDA-WebSocketHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda-bundle'),
+      code: lambda.Code.fromAsset('lambda/websocket-handler'),
       role: lambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: {
-        CONVERSATION_TABLE: conversationLogsTable.tableName,
+        CONVERSATION_TABLE: conversationHistoryTable.tableName,
+        ESCALATION_TABLE: escalationTable.tableName,
         OPENSEARCH_ENDPOINT: vectorCollection.collectionEndpoint,
         BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
         EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
@@ -259,6 +276,10 @@ export class USDAChatbotStack extends cdk.Stack {
 
     webSocketApi.addRoute('submitFeedback', {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitFeedbackIntegration', webSocketHandler),
+    });
+
+    webSocketApi.addRoute('submitEscalation', {
+      integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitEscalationIntegration', webSocketHandler),
     });
 
     const webSocketStage = new apigatewayv2.WebSocketStage(this, 'WebSocketStage', {
@@ -345,20 +366,22 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     // Grant DynamoDB access to admin Lambda
-    conversationLogsTable.grantReadWriteData(adminLambdaRole);
+    conversationHistoryTable.grantReadWriteData(adminLambdaRole);
     escalationTable.grantReadWriteData(adminLambdaRole);
 
     const adminHandler = new lambda.Function(this, 'AdminHandler', {
       functionName: 'AskUSDA-AdminHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'admin.handler',
-      code: lambda.Code.fromAsset('lambda-bundle'),
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/admin-api'),
       role: adminLambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       environment: {
-        CONVERSATION_TABLE: conversationLogsTable.tableName,
+        CONVERSATION_TABLE: conversationHistoryTable.tableName,
         ESCALATION_TABLE: escalationTable.tableName,
+        DATE_INDEX: 'date-timestamp-index',
+        FEEDBACK_INDEX: 'feedback-timestamp-index',
       },
     });
 
@@ -444,8 +467,8 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'ConversationTableName', {
-      value: conversationLogsTable.tableName,
-      description: 'DynamoDB Conversation Logs Table',
+      value: conversationHistoryTable.tableName,
+      description: 'DynamoDB Conversation History Table',
       exportName: 'AskUSDA-ConversationTable',
     });
 
