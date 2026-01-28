@@ -25,20 +25,27 @@ phases:
       - echo "Deploying CDK stack..."
       - cdk deploy --require-approval never --context amplifyAppId=$AMPLIFY_APP_ID
       - echo "CDK deployment complete."
-      - echo "Extracting WebSocket URL..."
+      - echo "Extracting stack outputs..."
       - cd ..
       - export WEBSOCKET_URL=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`WebSocketUrl`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
       - export ADMIN_API_URL=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminApiUrl`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - export COGNITO_USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminUserPoolId`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - export COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminUserPoolClientId`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
       - echo "WebSocket URL=$WEBSOCKET_URL"
       - echo "Admin API URL=$ADMIN_API_URL"
+      - echo "Cognito User Pool ID=$COGNITO_USER_POOL_ID"
+      - echo "Cognito Client ID=$COGNITO_CLIENT_ID"
       - echo ""
       - echo "=== FRONTEND DEPLOYMENT ==="
       - cd frontend
       - echo "Installing frontend dependencies..."
       - npm ci
-      - echo "Creating .env.local with WebSocket URL..."
+      - echo "Creating .env.local with environment variables..."
       - echo "NEXT_PUBLIC_WEBSOCKET_URL=$WEBSOCKET_URL" | tee .env.local
       - echo "NEXT_PUBLIC_ADMIN_API_URL=$ADMIN_API_URL" | tee -a .env.local
+      - echo "NEXT_PUBLIC_COGNITO_USER_POOL_ID=$COGNITO_USER_POOL_ID" | tee -a .env.local
+      - echo "NEXT_PUBLIC_COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID" | tee -a .env.local
+      - echo "NEXT_PUBLIC_AWS_REGION=$AWS_DEFAULT_REGION" | tee -a .env.local
       - echo "Building Next.js application..."
       - npm run build
       - echo "Creating deployment package..."
