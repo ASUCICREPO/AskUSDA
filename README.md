@@ -1,6 +1,6 @@
 # AskUSDA - USDA Chatbot
 
-AskUSDA is an AI-powered chatbot and admin dashboard that helps the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It uses AWS Bedrock Knowledge Bases, a serverless backend, and a modern Next.js frontend with a hover-over chatbot experience.
+AskUSDA is an intelligent AI-powered chatbot that helps  the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It uses AWS Bedrock Knowledge Bases, a serverless backend, and a modern Next.js frontend with a hover-over chatbot experience.
 
 ---
 
@@ -14,46 +14,55 @@ AskUSDA is an AI-powered chatbot and admin dashboard that helps the public, farm
 
 ## Table of Contents
 
-| Index                                               | Description                                              |
-| :-------------------------------------------------- | :------------------------------------------------------- |
-| [High Level Architecture](#high-level-architecture) | High level overview illustrating component interactions  |
-| [Deployment Guide](#deployment-guide)               | How to deploy the project                                |
-| [User Guide](#user-guide)                           | End-user instructions and walkthrough                    |
-| [API Documentation](#api-documentation)             | Documentation on the APIs the project uses               |
-| [Directories](#directories)                         | General project directory structure                      |
-| [Modification Guide](#modification-guide)           | Guide for developers extending the project               |
-| [Credits](#credits)                                 | Contributors and acknowledgments                         |
-| [License](#license)                                 | License information                                      |
+| Description           | Link                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| Overview              | [Overview](#overview)                                                |
+| Architecture          | [Architecture Diagram](#architecture-diagram)                        |
+| Detailed Architecture | [Architecture Deep Dive](docs/architectureDeepDive.md)               |
+| Deployment            | [Deployment Guide](#deployment-guide)                                |
+| User Guide            | [User Guide](docs/userGuide.md)                                      |
+| API Documentation     | [API Documentation](docs/APIDoc.md)                                  |
+| Modification Guide    | [Modification Guide](docs/modificationGuide.md)                      |
+| Credits               | [Credits](#credits)                                                  |
+| License               | [License](#license)                                                  |
 
 ---
 
-## High Level Architecture
+## Overview
 
-AskUSDA uses a fully serverless architecture on AWS. A Next.js frontend (hosted on AWS Amplify) exposes a hover-over chatbot for end users and an `/admin` dashboard for analysts. The frontend connects to a WebSocket API Gateway and Lambda function for real-time chat, and to an HTTP API + Lambda for admin metrics, feedback, and escalation management. Conversation logs, feedback, and escalations are stored in DynamoDB, while AWS Bedrock (Nova Pro) and a Bedrock Knowledge Base backed by OpenSearch provide retrieval-augmented generation over USDA.gov content.
+AskUSDA is an AI-powered chatbot that helps the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It enables natural-language conversations over USDA.gov content, with a hover-over chatbot on the main site and an admin dashboard for monitoring user feedback and escalations.
+
+### Key Features
+
+- **AI-Powered Conversations** using AWS Bedrock with Nova Pro
+- **Knowledge Base Integration** with USDA.gov and farmers.gov content (web pages and PDFs) via OpenSearch Serverless
+- **Real-time Streaming Responses** over WebSockets for a natural chat experience
+- **Citation Support** with source references for transparency
+- **Thumbs Up/Down Feedback** stored per message for analytics
+- **Admin Dashboard** for metrics, conversation feedback, and escalation requests
+- **Escalation Requests** with view/delete and full conversation preview
+- **Hover-over Chatbot** and responsive design for desktop and mobile
+
+---
+
+## Architecture Diagram
 
 ![Architecture Diagram](./docs/media/architecture.png)
 
-> The architecture diagram should show:
-> - Frontend (Next.js on Amplify) and hover-over chatbot
-> - WebSocket API Gateway, Admin HTTP API Gateway, and Lambda functions
-> - DynamoDB tables for `AskUSDA-ConversationLogs` and `AskUSDA-EscalationRequests`
-> - AWS Bedrock models and Knowledge Base backed by OpenSearch Serverless
-> - Optional Cognito authentication for the admin dashboard
-> 
-> Save the diagram as `docs/media/architecture.png` (or .jpeg/.jpg).
+The application implements a serverless architecture on AWS, combining:
 
-For a detailed explanation of the architecture, see the [Architecture Deep Dive](./docs/architectureDeepDive.md).
+- **Frontend**: Next.js application hosted on AWS Amplify (main page with hover chatbot, `/admin` dashboard)
+- **Backend**: AWS CDK–deployed WebSocket API + HTTP Admin API with Lambda handlers
+- **AI Layer**: AWS Bedrock Knowledge Base and Nova Pro, with optional guardrails
+- **Data Storage**: DynamoDB for conversation logs, feedback, and escalation requests
+
+For a detailed explanation of the architecture, see the [Architecture Deep Dive](docs/architectureDeepDive.md).
 
 ---
 
 ## Deployment Guide
 
 For complete deployment instructions, see the [Deployment Guide](./docs/deploymentGuide.md).
-
-**Quick Start:**
-1. Deploy the backend CDK stack from the `backend/` folder (this creates the WebSocket API, Admin API, DynamoDB tables, Bedrock integrations, and required IAM roles).
-2. Configure the frontend `.env.local` with `NEXT_PUBLIC_WEBSOCKET_URL` and `NEXT_PUBLIC_ADMIN_API_URL` using the outputs from the CDK deployment.
-3. Deploy the frontend from the `frontend/` folder (e.g., via AWS Amplify Hosting) and open the main page to start chatting with AskUSDA.
 
 ---
 
