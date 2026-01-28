@@ -1,6 +1,6 @@
 # Architecture Deep Dive
 
-This document provides a detailed explanation of the [INSERT_PROJECT_NAME] architecture.
+This document provides a detailed explanation of the AskUSDA architecture.
 
 ---
 
@@ -8,117 +8,347 @@ This document provides a detailed explanation of the [INSERT_PROJECT_NAME] archi
 
 ![Architecture Diagram](./media/architecture.png)
 
-> **[PLACEHOLDER]** Architecture diagram needed. Please create a diagram showing the complete system architecture and save it as `docs/media/architecture.png`
+---
+
+## Architecture Overview
+
+AskUSDA is built on a fully serverless AWS architecture, designed for scalability, cost-efficiency, and ease of maintenance. The system consists of three main user flows:
+
+1. **Visitor Chat Flow** – Users interact with the AI chatbot via a hover-over widget on the main page
+2. **Admin Dashboard Flow** – Staff access metrics, conversation feedback, and escalation requests at `/admin`
+3. **Knowledge Ingestion Flow** – USDA.gov and farmers.gov content is indexed via a web crawler data source
 
 ---
 
 ## Architecture Flow
 
-The following describes the step-by-step flow of how the system processes requests:
+### 1. User Interaction (Public, Farmers, Ranchers)
 
-### 1. User Interaction
-[INSERT_STEP_1_DESCRIPTION - Describe how users interact with the system, e.g., "User accesses the chatbot through the web interface"]
+Users access the chatbot through a web interface hosted on **AWS Amplify**:
 
-### 2. Request Processing
-[INSERT_STEP_2_DESCRIPTION - Describe how requests are received and processed]
+- The **Frontend** is a Next.js application (App Router) with a main page and hover-over chatbot
+- The main page displays a USDA-themed background; the **ChatBot** component floats as a widget
+- Users send messages over **WebSockets** and receive **streaming** responses with markdown and citations
+- **Thumbs up / thumbs down** feedback is collected per assistant message and sent over the same WebSocket
 
-### 3. [INSERT_STEP_3_NAME]
-[INSERT_STEP_3_DESCRIPTION]
+### 2. WebSocket API (Chat) and HTTP API (Admin)
 
-### 4. [INSERT_STEP_4_NAME]
-[INSERT_STEP_4_DESCRIPTION]
+**Amazon API Gateway** provides two entry points:
 
-### 5. Response Generation
-[INSERT_STEP_5_DESCRIPTION - Describe how responses are generated and returned to the user]
+- **WebSocket API** (`AskUSDA-WebSocket`):
+  - Routes: `$connect`, `$disconnect`, `sendMessage`, `submitFeedback`
+  - All chat and feedback traffic uses the WebSocket connection
+  - Single Lambda (**WebSocket Handler**) handles every route
+
+- **HTTP API** (`AskUSDA-AdminAPI`):
+  - `GET /metrics` – Dashboard statistics (conversations, upvotes, downvotes, escalations)
+  - `GET /feedback`, `POST /feedback` – Conversation feedback list and submit
+  - `GET /escalations`, `POST /escalations`, `DELETE /escalations/{id}` – Escalation CRUD
+  - CORS enabled for frontend; no auth in current implementation
+
+### 3. WebSocket Handler Lambda (Chat + Feedback)
+
+The **AskUSDA-WebSocketHandler** Lambda (`index.js`) implements the core chat flow:
+
+- **Connect / Disconnect**: Persists `connectionId` in DynamoDB; no auth
+- **sendMessage**:  
+  - Validates and optionally filters input via **Bedrock Guardrail**  
+  - Saves user message to **Conversation Logs**  
+  - Sends typing indicator  
+  - Calls **Bedrock Knowledge Base** (Retrieve) for RAG context  
+  - Builds conversation history from DynamoDB, then **ConverseStream** (Nova Pro) for streaming reply  
+  - Streams chunks to the client over WebSocket  
+  - Saves assistant message and citations to **Conversation Logs**
+- **submitFeedback**: Writes feedback (positive / negative / neutral) to **Conversation Logs** keyed by `connectionId`
+
+### 4. Bedrock Knowledge Base
+
+**Amazon Bedrock Knowledge Base** provides RAG:
+
+- **Embedding model**: `amazon.titan-embed-text-v2:0` (1024 dimensions)
+- **Generation model**: `amazon.nova-pro-v1:0` for streaming responses
+- **Retrieve**: Fetches relevant chunks from the vector store for context
+- **Optional Guardrail**: Content filtering on input and output; fail-open on errors
+- Returns **citations** (source URLs) that the frontend renders with markdown
+
+### 5. OpenSearch Serverless
+
+**Amazon OpenSearch Serverless** is the vector store:
+
+- **Vector collection**: `askusda-vectors`  
+- **Index**: `askusda-index` with `vector` field, L2 distance, 1024-d vectors
+- Mappings include `AMAZON_BEDROCK_TEXT_CHUNK` and `AMAZON_BEDROCK_METADATA` for Knowledge Base compatibility
+- Scales automatically; no cluster management
+
+### 6. Data Sources (Knowledge Base)
+
+The Knowledge Base is populated via a **web crawler** data source:
+
+- **Seed URLs**: `https://www.usda.gov/`, `https://www.farmers.gov/`
+- **Scope**: `HOST_ONLY`; configurable rate limit
+- Content is parsed, embedded with Titan, and stored in OpenSearch Serverless
+- Sync is triggered manually or via Bedrock Data Source ingest (no EventBridge daily trigger in current CDK)
+
+### 7. Admin Flow
+
+Admins use the **`/admin`** dashboard:
+
+1. Frontend calls **Admin HTTP API** (`GET /metrics`, `GET /feedback`, `GET /escalations`, etc.)
+2. **AskUSDA-AdminHandler** Lambda (`admin.js`) implements each route
+3. **Metrics**: Aggregated from **Conversation Logs** (sessions, messages, feedback counts) and **Escalation Requests** (count)
+4. **Feedback**: Reads **Conversation Logs** for items with `role: 'feedback'` and related `user` / `assistant` messages; returns list and full conversation for “View”
+5. **Escalations**: CRUD against **Escalation Requests** table (create from form, list, delete by id)
+
+*Note: The architecture diagram references Cognito for admin auth; the current implementation does not yet use Cognito.*
+
+### 8. Data Storage (DynamoDB)
+
+Two DynamoDB tables store application data:
+
+#### Conversation Logs (`AskUSDA-ConversationLogs`)
+
+- **Keys**: `connectionId` (PK), `timestamp` (SK)
+- **GSI**: `SessionIndex` on `sessionId` + `timestamp`
+- **TTL**: `ttl` for automatic expiry
+- Stores: `system` (connection), `user` / `assistant` messages (content, optional citations), `feedback` records
+- Used for chat history, RAG context, metrics, and feedback views in admin
+
+#### Escalation Requests (`AskUSDA-EscalationRequests`)
+
+- **Keys**: `id` (PK), `requestDate` (SK)
+- **GSI**: `DateIndex` on `requestDate` + `timestamp`
+- **TTL**: `ttl` for optional expiry
+- Stores: name, email, phone, question, and related metadata for escalation requests
+- Used only by Admin API and `/admin` dashboard
 
 ---
 
 ## Cloud Services / Technology Stack
 
 ### Frontend
-- **Next.js**: [INSERT_NEXTJS_USAGE_DESCRIPTION - e.g., "React framework for the web application interface"]
-  - App Router for page routing
-  - [INSERT_ADDITIONAL_FRONTEND_DETAILS]
+
+- **Next.js 16**: React framework with App Router
+  - Main page: full-screen background image + hover-over **ChatBot**
+  - **`/admin`**: Dashboard with metrics, feedback table, escalation table, modals
+  - **Tailwind CSS v4** and **@tailwindcss/typography** for layout and markdown
+  - **react-markdown** for rendering bot responses and admin conversation previews
+  - Client-side **WebSocket** for chat; **fetch** for Admin API
+
+- **AWS Amplify**: Frontend hosting and CI/CD
+  - Builds from `frontend/` (e.g. `npm ci` + `npm run build`)
+  - Env: `NEXT_PUBLIC_WEBSOCKET_URL`, `NEXT_PUBLIC_ADMIN_API_URL` from CDK outputs
 
 ### Backend Infrastructure
-- **AWS CDK**: Infrastructure as Code for deploying AWS resources
-  - Defines all cloud infrastructure in TypeScript
-  - Enables reproducible deployments
 
-- **Amazon API Gateway**: [INSERT_API_GATEWAY_DESCRIPTION - e.g., "Acts as the front door for all API requests"]
-  - [INSERT_API_GATEWAY_DETAILS]
+- **AWS CDK**: Infrastructure as Code (TypeScript)
+  - Single stack defines DynamoDB, OpenSearch, Bedrock KB, Lambdas, API Gateways, Amplify app
 
-- **AWS Lambda**: Serverless compute for backend logic
-  - **[INSERT_LAMBDA_FUNCTION_1_NAME]**: [INSERT_LAMBDA_FUNCTION_1_DESCRIPTION]
-  - **[INSERT_LAMBDA_FUNCTION_2_NAME]**: [INSERT_LAMBDA_FUNCTION_2_DESCRIPTION]
-  - **[INSERT_LAMBDA_FUNCTION_3_NAME]**: [INSERT_LAMBDA_FUNCTION_3_DESCRIPTION]
+- **Amazon API Gateway**:
+  - **WebSocket API** for chat and feedback
+  - **HTTP API** for admin (CORS, no authorizer in current setup)
+
+- **AWS Lambda** (Node.js 20.x):
+  - **AskUSDA-WebSocketHandler** (`lambda-bundle/index.js`): WebSocket routes, KB, streaming, guardrails, DynamoDB
+  - **AskUSDA-AdminHandler** (`lambda-bundle/admin.js`): REST handlers for metrics, feedback, escalations
 
 ### AI/ML Services
-- **Amazon Bedrock**: [INSERT_BEDROCK_DESCRIPTION - e.g., "Foundation model service for AI capabilities"]
-  - Model: [INSERT_MODEL_NAME]
-  - [INSERT_BEDROCK_USAGE_DETAILS]
 
-- **[INSERT_ADDITIONAL_AI_SERVICE]**: [INSERT_AI_SERVICE_DESCRIPTION]
+- **Amazon Bedrock**:
+  - Knowledge Base with RAG over USDA/farmers.gov content
+  - **Nova Pro** (`amazon.nova-pro-v1:0`) for generation
+  - **Titan Embed Text v2** for embeddings
+  - **Guardrail** (`AskUSDA-Guardrail`) for content filtering
+
+- **Amazon OpenSearch Serverless**: Vector store (see above)
 
 ### Data Storage
-- **Amazon S3**: [INSERT_S3_USAGE_DESCRIPTION - e.g., "Object storage for documents and media"]
-  - Bucket: [INSERT_BUCKET_PURPOSE]
 
-- **Amazon DynamoDB**: [INSERT_DYNAMODB_DESCRIPTION - if applicable]
-  - Table: [INSERT_TABLE_PURPOSE]
+- **Amazon DynamoDB**:
+  - **Conversation Logs**: Chat history, feedback, session data
+  - **Escalation Requests**: Admin-managed escalation records
+  - Pay-per-request billing; TTL where used
 
-### Additional Services
-- **[INSERT_SERVICE_NAME]**: [INSERT_SERVICE_DESCRIPTION]
-- **[INSERT_SERVICE_NAME]**: [INSERT_SERVICE_DESCRIPTION]
+### Security & Authentication
+
+- **IAM**: Least-privilege roles for Lambdas (DynamoDB, Bedrock, Knowledge Base, OpenSearch, Execute API)
+- **Cognito**: Not yet integrated; admin endpoints are unauthenticated.
+- **Secrets Manager**: Used for Amplify GitHub token (`usda-token`), not for app runtime secrets.
 
 ---
 
 ## Infrastructure as Code
 
-This project uses **AWS CDK (Cloud Development Kit)** to define and deploy infrastructure.
+This project uses **AWS CDK** to define and deploy infrastructure.
 
 ### CDK Stack Structure
 
 ```
 backend/
 ├── bin/
-│   └── backend.ts          # CDK app entry point
+│   └── backend.ts              # CDK app entry point
 ├── lib/
-│   └── backend-stack.ts    # Main stack definition
-└── lambda/
-    └── [INSERT_LAMBDA_HANDLERS]
+│   └── backend-stack.ts        # Main stack definition
+├── lambda-bundle/
+│   ├── index.js                # WebSocket handler (chat, feedback)
+│   ├── admin.js                # Admin HTTP API handler
+│   └── package.json            # Lambda dependencies
+├── cdk.json
+├── package.json
+└── tsconfig.json
 ```
 
 ### Key CDK Constructs
 
-[INSERT_CDK_CONSTRUCTS_DESCRIPTION - Describe the main constructs used in the CDK stack]
+1. **DynamoDB Table** (`aws-cdk-lib/aws-dynamodb`)
+   - `ConversationLogs` and `EscalationRequests` with GSIs and TTL
 
-1. **[INSERT_CONSTRUCT_1]**: [INSERT_CONSTRUCT_1_DESCRIPTION]
-2. **[INSERT_CONSTRUCT_2]**: [INSERT_CONSTRUCT_2_DESCRIPTION]
-3. **[INSERT_CONSTRUCT_3]**: [INSERT_CONSTRUCT_3_DESCRIPTION]
+2. **VectorCollection** (`@cdklabs/generative-ai-cdk-constructs`)
+   - OpenSearch Serverless collection `askusda-vectors`
+
+3. **VectorIndex** (`@cdklabs/generative-ai-cdk-constructs`)
+   - Index `askusda-index` with vector and metadata mappings
+
+4. **CfnKnowledgeBase** (`aws-cdk-lib/aws-bedrock`)
+   - Bedrock Knowledge Base with Titan embeddings and OpenSearch storage
+
+5. **CfnDataSource** (`aws-cdk-lib/aws-bedrock`)
+   - Web crawler data source for usda.gov and farmers.gov
+
+6. **CfnGuardrail** (`aws-cdk-lib/aws-bedrock`)
+   - Content filters for input/output
+
+7. **WebSocketApi** / **WebSocketStage** (`aws-cdk-lib/aws-apigatewayv2`)
+   - WebSocket API with connect, disconnect, sendMessage, submitFeedback routes
+
+8. **HttpApi** (`aws-cdk-lib/aws-apigatewayv2`)
+   - Admin HTTP API with /metrics, /feedback, /escalations routes
+
+9. **Function** (`aws-cdk-lib/aws-lambda`)
+   - WebSocket and Admin Lambdas pointing at `lambda-bundle`
+
+10. **CfnApp** / **CfnBranch** (`aws-cdk-lib/aws-amplify`)
+    - Amplify app and branch with build spec and env vars
 
 ### Deployment Automation
 
-[INSERT_DEPLOYMENT_AUTOMATION_DESCRIPTION - Describe any CI/CD or automated deployment processes]
+- **Amplify**: Builds and deploys frontend on git push; uses CDK outputs for WebSocket and Admin API URLs.
+- **CDK**: Deploy via `cdk deploy` (or your chosen CI); stack creates all backend resources.
 
 ---
 
 ## Security Considerations
 
-[INSERT_SECURITY_CONSIDERATIONS - Describe security measures implemented in the architecture]
+### Authentication
 
-- **Authentication**: [INSERT_AUTH_DESCRIPTION]
-- **Authorization**: [INSERT_AUTHZ_DESCRIPTION]
-- **Data Encryption**: [INSERT_ENCRYPTION_DESCRIPTION]
-- **Network Security**: [INSERT_NETWORK_SECURITY_DESCRIPTION]
+- **Admin Dashboard**: No authentication in current implementation; architecture diagram shows Cognito, which is not yet wired.
+- **Chat / Feedback**: No user auth; identified by WebSocket `connectionId` only.
+
+### Authorization
+
+- **IAM**: Lambda roles scoped to required services (DynamoDB, Bedrock, OpenSearch, API Gateway).
+- **API Gateway**: No authorizers; WebSocket and Admin APIs are publicly reachable.
+
+### Data Encryption
+
+- **At rest**: DynamoDB and OpenSearch Serverless use default encryption.
+- **In transit**: HTTPS/WSS for all client traffic.
+
+### Network Security
+
+- **CORS**: Admin API allows configured origins.
+- **OpenSearch Serverless**: Data plane access via IAM; no VPC required for this setup.
+
+### Data Privacy
+
+- **Conversation Logs**: Store messages and feedback for analytics and admin views; consider PII and retention policy.
+- **Escalation Requests**: Include name, email, phone, question; handle per USDA privacy requirements.
 
 ---
 
 ## Scalability
 
-[INSERT_SCALABILITY_DESCRIPTION - Describe how the architecture handles scaling]
+### Auto-scaling
 
-- **Auto-scaling**: [INSERT_AUTOSCALING_DETAILS]
-- **Load Balancing**: [INSERT_LOAD_BALANCING_DETAILS]
-- **Caching**: [INSERT_CACHING_DETAILS]
+- **Lambda**: Concurrency scales automatically with demand.
+- **DynamoDB**: Pay-per-request; no provisioned capacity.
+- **OpenSearch Serverless**: Managed scaling.
+- **API Gateway**: Managed scaling for WebSocket and HTTP APIs.
 
+### Performance Optimizations
+
+- **Streaming**: Chat responses streamed over WebSocket to reduce perceived latency.
+- **Projections / Filters**: Admin Lambda uses projections and filters to limit DynamoDB reads where possible.
+- **Feedback resolution**: Admin fetches conversations by `connectionId` for feedback detail views.
+
+### Cost Optimization
+
+- **Serverless**: Pay for actual usage.
+- **DynamoDB on-demand**: No provisioned RCU/WCU.
+- **OpenSearch Serverless**: No cluster management; standby replicas disabled in stack.
+
+---
+
+## Data Flow Diagrams
+
+### Chat Request Flow
+
+```
+User → Amplify (Frontend) → WebSocket API → WebSocket Handler Lambda
+                                                      ↓
+                                              Guardrail (input)
+                                                      ↓
+                                              Save user message → DynamoDB (Conversation Logs)
+                                                      ↓
+                                              Bedrock Knowledge Base (Retrieve)
+                                                      ↓
+                                              OpenSearch Serverless (vector search)
+                                                      ↓
+                                              ConverseStream (Nova Pro) → stream chunks → User
+                                                      ↓
+                                              Save assistant message → DynamoDB
+                                                      ↓
+                                              sendMessage response (citations) → User
+```
+
+### Feedback Flow
+
+```
+User (thumbs up/down) → WebSocket (submitFeedback) → WebSocket Handler Lambda
+                                                              ↓
+                                                    Save feedback → DynamoDB (Conversation Logs)
+                                                              ↓
+                                                    feedbackReceived → User
+```
+
+### Admin Dashboard Flow
+
+```
+Admin → Amplify (/admin) → HTTP API (GET /metrics, /feedback, /escalations)
+                                    ↓
+                          Admin Handler Lambda
+                                    ↓
+                          DynamoDB (Conversation Logs, Escalation Requests)
+                                    ↓
+                          JSON response → Admin (metrics, tables, modals)
+```
+
+### Knowledge Ingestion Flow
+
+```
+Web Crawler Data Source (usda.gov, farmers.gov)
+                    ↓
+         Bedrock Data Source ingest
+                    ↓
+         Chunking + Titan Embeddings
+                    ↓
+         OpenSearch Serverless (vector index)
+```
+
+---
+
+## Related Documentation
+
+- [Deployment Guide](./deploymentGuide.md) – How to deploy the application
+- [API Documentation](./APIDoc.md) – WebSocket and Admin API reference
+- [Modification Guide](./modificationGuide.md) – How to customize the application
+- [User Guide](./userGuide.md) – How to use the chatbot and admin dashboard

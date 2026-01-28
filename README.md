@@ -53,7 +53,7 @@ The application implements a serverless architecture on AWS, combining:
 
 - **Frontend**: Next.js application hosted on AWS Amplify (main page with hover chatbot, `/admin` dashboard)
 - **Backend**: AWS CDK–deployed WebSocket API + HTTP Admin API with Lambda handlers
-- **AI Layer**: AWS Bedrock Knowledge Base and Nova Pro, with optional guardrails
+- **AI Layer**: AWS Bedrock Knowledge Base and Nova Pro, with guardrails for filtering out harmful content and block denied topics
 - **Data Storage**: DynamoDB for conversation logs, feedback, and escalation requests
 
 For a detailed explanation of the architecture, see the [Architecture Deep Dive](docs/architectureDeepDive.md).
