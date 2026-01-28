@@ -662,7 +662,7 @@ export default function AdminPage() {
               <div>
                 <h3 className="font-semibold text-white">Conversation Details</h3>
                 <p className="text-sm text-white/80">
-                  {selectedConversation.sessionId.substring(0, 12)}... • {selectedConversation.module}
+                  Session: {selectedConversation.sessionId.substring(0, 12)}...
                 </p>
               </div>
               <div className="flex items-center gap-3">
