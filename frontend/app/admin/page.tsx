@@ -1,162 +1,210 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 
 interface EscalationRequest {
   id: string;
   name: string;
   email: string;
-  module: string;
+  phone: string;
+  question: string;
   requestDate: string;
-  status: "Pending" | "In Progress" | "Resolved" | "Escalated";
-  description: string;
 }
 
-const mockEscalationRequests: EscalationRequest[] = [
-  {
-    id: "1",
-    name: "David Thompson",
-    email: "david.t@example.com",
-    module: "Farm Loans",
-    requestDate: "2026-01-27",
-    status: "Pending",
-    description: "Inquiry about loan eligibility for new farmers",
-  },
-  {
-    id: "2",
-    name: "Sarah Martinez",
-    email: "smartinez@email.com",
-    module: "Food Safety",
-    requestDate: "2026-01-26",
-    status: "In Progress",
-    description: "Report of contaminated produce at local market",
-  },
-  {
-    id: "3",
-    name: "Robert Chen",
-    email: "rchen@business.net",
-    module: "Conservation Programs",
-    requestDate: "2026-01-25",
-    status: "Escalated",
-    description: "Questions about EQIP enrollment deadline",
-  },
-  {
-    id: "4",
-    name: "Emily Johnson",
-    email: "ejohnson@farm.org",
-    module: "Crop Insurance",
-    requestDate: "2026-01-24",
-    status: "Resolved",
-    description: "Claim dispute for drought damage",
-  },
-  {
-    id: "5",
-    name: "Michael Brown",
-    email: "mbrown@agri.com",
-    module: "Rural Development",
-    requestDate: "2026-01-23",
-    status: "Pending",
-    description: "Grant application status inquiry",
-  },
-  {
-    id: "6",
-    name: "Lisa Anderson",
-    email: "landerson@email.com",
-    module: "Farm Loans",
-    requestDate: "2026-01-22",
-    status: "In Progress",
-    description: "Refinancing options for existing farm loan",
-  },
-  {
-    id: "7",
-    name: "James Wilson",
-    email: "jwilson@ranch.net",
-    module: "Livestock Programs",
-    requestDate: "2026-01-21",
-    status: "Pending",
-    description: "Questions about disaster assistance for cattle",
-  },
-  {
-    id: "8",
-    name: "Patricia Davis",
-    email: "pdavis@organic.org",
-    module: "Organic Certification",
-    requestDate: "2026-01-20",
-    status: "Resolved",
-    description: "Certification renewal process clarification",
-  },
-];
+interface ConversationMessage {
+  role: "user" | "bot";
+  content: string;
+  timestamp: string;
+}
 
-const stats = [
-  {
-    label: "Total Conversations",
-    value: "1,247",
-    change: "+12%",
-    changeType: "positive" as const,
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-    ),
-  },
-  {
-    label: "Resolved Queries",
-    value: "892",
-    change: "+8%",
-    changeType: "positive" as const,
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-        <polyline points="22 4 12 14.01 9 11.01" />
-      </svg>
-    ),
-  },
-  {
-    label: "Escalations",
-    value: "156",
-    change: "-3%",
-    changeType: "negative" as const,
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-        <line x1="12" y1="9" x2="12" y2="13" />
-        <line x1="12" y1="17" x2="12.01" y2="17" />
-      </svg>
-    ),
-  },
-  {
-    label: "Avg Response Time",
-    value: "2.4s",
-    change: "-15%",
-    changeType: "positive" as const,
-    icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
-      </svg>
-    ),
-  },
-];
+interface FeedbackConversation {
+  id: string;
+  sessionId: string;
+  question: string;
+  feedback: "positive" | "negative" | "neutral";
+  module: string;
+  timestamp: string;
+  conversation: ConversationMessage[];
+}
 
-const statusColors = {
-  Pending: "bg-yellow-100 text-yellow-800",
-  "In Progress": "bg-blue-100 text-blue-800",
-  Resolved: "bg-green-100 text-green-800",
-  Escalated: "bg-red-100 text-red-800",
+interface Metrics {
+  totalConversations: number;
+  totalMessages: number;
+  escalations: number;
+  feedback: {
+    positive: number;
+    negative: number;
+    neutral: number;
+    total: number;
+  };
+}
+
+const ADMIN_API_URL = process.env.NEXT_PUBLIC_ADMIN_API_URL || "";
+
+// Icons for stats
+const statsIcons = {
+  conversations: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  ),
+  upvotes: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  ),
+  downvotes: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+    </svg>
+  ),
+  escalations: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  ),
+};
+
+const feedbackColors = {
+  positive: "bg-green-100 text-green-800",
+  negative: "bg-red-100 text-red-800",
+  neutral: "bg-gray-100 text-gray-800",
+};
+
+const feedbackIcons = {
+  positive: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+    </svg>
+  ),
+  negative: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+    </svg>
+  ),
+  neutral: (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="8" y1="12" x2="16" y2="12" />
+    </svg>
+  ),
 };
 
 export default function AdminPage() {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [feedbackFilter, setFeedbackFilter] = useState<string>("all");
+  const [selectedConversation, setSelectedConversation] = useState<FeedbackConversation | null>(null);
+  const [selectedEscalation, setSelectedEscalation] = useState<EscalationRequest | null>(null);
+  
+  // Data states
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [escalationRequests, setEscalationRequests] = useState<EscalationRequest[]>([]);
+  const [feedbackConversations, setFeedbackConversations] = useState<FeedbackConversation[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const filteredRequests = mockEscalationRequests.filter((request) => {
-    const matchesSearch =
-      request.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      request.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      request.module.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === "all" || request.status === statusFilter;
-    return matchesSearch && matchesStatus;
+  // Fetch data from API
+  const fetchData = useCallback(async () => {
+    if (!ADMIN_API_URL) {
+      setError("Admin API URL not configured");
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      // Fetch all data in parallel
+      const [metricsRes, feedbackRes, escalationsRes] = await Promise.all([
+        fetch(`${ADMIN_API_URL}/metrics`),
+        fetch(`${ADMIN_API_URL}/feedback`),
+        fetch(`${ADMIN_API_URL}/escalations`),
+      ]);
+
+      if (!metricsRes.ok || !feedbackRes.ok || !escalationsRes.ok) {
+        throw new Error("Failed to fetch data from API");
+      }
+
+      const [metricsData, feedbackData, escalationsData] = await Promise.all([
+        metricsRes.json(),
+        feedbackRes.json(),
+        escalationsRes.json(),
+      ]);
+
+      setMetrics(metricsData);
+      setFeedbackConversations(feedbackData);
+      setEscalationRequests(escalationsData);
+    } catch (err) {
+      console.error("Error fetching admin data:", err);
+      setError(err instanceof Error ? err.message : "Failed to load data");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Fetch data on mount
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // Delete escalation
+  const handleDeleteEscalation = async (id: string) => {
+    if (!ADMIN_API_URL) return;
+    
+    try {
+      const res = await fetch(`${ADMIN_API_URL}/escalations/${id}`, {
+        method: "DELETE",
+      });
+
+      if (res.ok) {
+        setEscalationRequests((prev) => prev.filter((e) => e.id !== id));
+      }
+    } catch (err) {
+      console.error("Error deleting escalation:", err);
+    }
+  };
+
+  const filteredRequests = escalationRequests;
+
+  const filteredFeedback = feedbackConversations.filter((conv) => {
+    const matchesFeedback = feedbackFilter === "all" || conv.feedback === feedbackFilter;
+    return matchesFeedback;
   });
+
+  // Build stats from metrics
+  const stats = [
+    {
+      label: "Total Conversations",
+      value: metrics?.totalConversations?.toString() || "0",
+      change: "--",
+      changeType: "positive" as const,
+      icon: statsIcons.conversations,
+    },
+    {
+      label: "Total Upvotes",
+      value: metrics?.feedback?.positive?.toString() || "0",
+      change: "--",
+      changeType: "positive" as const,
+      icon: statsIcons.upvotes,
+    },
+    {
+      label: "Total Downvotes",
+      value: metrics?.feedback?.negative?.toString() || "0",
+      change: "--",
+      changeType: "positive" as const,
+      icon: statsIcons.downvotes,
+    },
+    {
+      label: "Escalations",
+      value: metrics?.escalations?.toString() || "0",
+      change: "--",
+      changeType: "positive" as const,
+      icon: statsIcons.escalations,
+    },
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -174,39 +222,67 @@ export default function AdminPage() {
               <p className="text-sm text-gray-500">Admin Dashboard</p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Search..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-64 rounded-lg border border-gray-300 py-2 pl-10 pr-4 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20"
-              />
-              <svg
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-                xmlns="http://www.w3.org/2000/svg"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            </div>
-            <button className="rounded-lg bg-[#205493] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a4480]">
-              Export
-            </button>
-          </div>
+          <button
+            onClick={fetchData}
+            disabled={isLoading}
+            className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={isLoading ? "animate-spin" : ""}
+            >
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+              <path d="M16 21h5v-5" />
+            </svg>
+            Refresh
+          </button>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+        {/* Loading State */}
+        {isLoading && (
+          <div className="mb-8 flex items-center justify-center py-12">
+            <div className="flex items-center gap-3">
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#205493] border-t-transparent" />
+              <span className="text-gray-600">Loading dashboard data...</span>
+            </div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && !isLoading && (
+          <div className="mb-8 rounded-xl border border-red-200 bg-red-50 p-4">
+            <div className="flex items-center gap-3">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-600">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <div>
+                <p className="font-medium text-red-800">Error loading data</p>
+                <p className="text-sm text-red-600">{error}</p>
+              </div>
+              <button
+                onClick={fetchData}
+                className="ml-auto rounded-lg bg-red-100 px-3 py-1.5 text-sm font-medium text-red-800 transition-colors hover:bg-red-200"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Stats Cards */}
         <div className="mb-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {stats.map((stat, index) => (
@@ -238,19 +314,6 @@ export default function AdminPage() {
         <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
             <h2 className="text-lg font-semibold text-gray-900">Escalation Requests</h2>
-            <div className="flex items-center gap-3">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20"
-              >
-                <option value="all">All Status</option>
-                <option value="Pending">Pending</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Resolved">Resolved</option>
-                <option value="Escalated">Escalated</option>
-              </select>
-            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -264,13 +327,13 @@ export default function AdminPage() {
                     Email
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Module
+                    Phone
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Request Date
+                    Question
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                    Status
+                    Date
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
                     Action
@@ -278,84 +341,428 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredRequests.map((request) => (
-                  <tr key={request.id} className="transition-colors hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#205493] text-sm font-medium text-white">
-                          {request.name
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")}
+                {filteredRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-12 text-center">
+                      <p className="text-sm text-gray-500">No escalation requests yet</p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRequests.map((request) => (
+                    <tr key={request.id} className="transition-colors hover:bg-gray-50">
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#205493] text-sm font-medium text-white">
+                            {request.name
+                              .split(" ")
+                              .map((n) => n[0])
+                              .join("")}
+                          </div>
+                          <span className="font-medium text-gray-900">{request.name}</span>
                         </div>
-                        <span className="font-medium text-gray-900">{request.name}</span>
-                      </div>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
+                        {request.email}
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
+                        {request.phone}
+                      </td>
+                      <td className="max-w-xs truncate px-6 py-4 text-sm text-gray-600">
+                        {request.question}
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
+                        {new Date(request.requestDate).toLocaleDateString("en-US", {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setSelectedEscalation(request)}
+                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]"
+                            title="View question"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteEscalation(request.id)}
+                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600"
+                            title="Delete"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination - only show when there are items */}
+          {filteredRequests.length > 0 && (
+            <div className="flex items-center justify-between border-t border-gray-200 px-6 py-4">
+              <p className="text-sm text-gray-500">
+                Showing <span className="font-medium">{filteredRequests.length}</span> of{" "}
+                <span className="font-medium">{escalationRequests.length}</span> results
+              </p>
+              {escalationRequests.length > 10 && (
+                <div className="flex items-center gap-2">
+                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    Previous
+                  </button>
+                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Conversation Feedback Table */}
+        <div className="mt-8 rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+            <h2 className="text-lg font-semibold text-gray-900">Conversation Feedback</h2>
+            <div className="flex items-center gap-3">
+              <select
+                value={feedbackFilter}
+                onChange={(e) => setFeedbackFilter(e.target.value)}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20"
+              >
+                <option value="all">All Feedback</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+                <option value="neutral">Neutral</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-200 bg-gray-50">
+                  <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Session ID
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Date
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Feedback
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {filteredFeedback.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-12 text-center">
+                      <p className="text-sm text-gray-500">No feedback received yet</p>
                     </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
-                      {request.email}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
-                      {request.module}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
-                      {new Date(request.requestDate).toLocaleDateString("en-US", {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <span
-                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${statusColors[request.status]}`}
-                      >
-                        {request.status}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <button className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]">
+                  </tr>
+                ) : (
+                  filteredFeedback.map((conv) => (
+                    <tr key={conv.id} className="transition-colors hover:bg-gray-50">
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <span className="font-mono text-sm text-gray-600">{conv.sessionId.substring(0, 12)}...</span>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-600">
+                        {new Date(conv.timestamp).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[conv.feedback]}`}
+                        >
+                          {feedbackIcons[conv.feedback]}
+                          {conv.feedback.charAt(0).toUpperCase() + conv.feedback.slice(1)}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-6 py-4">
+                        <button
+                          onClick={() => setSelectedConversation(conv)}
+                          className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]"
+                          title="View conversation"
+                        >
                           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                             <circle cx="12" cy="12" r="3" />
                           </svg>
                         </button>
-                        <button className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                          </svg>
-                        </button>
-                        <button className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="3 6 5 6 21 6" />
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                          </svg>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
 
-          {/* Pagination */}
-          <div className="flex items-center justify-between border-t border-gray-200 px-6 py-4">
-            <p className="text-sm text-gray-500">
-              Showing <span className="font-medium">{filteredRequests.length}</span> of{" "}
-              <span className="font-medium">{mockEscalationRequests.length}</span> results
-            </p>
-            <div className="flex items-center gap-2">
-              <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
-                Previous
-              </button>
-              <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
-                Next
-              </button>
+          {/* Pagination - only show when there are items */}
+          {filteredFeedback.length > 0 && (
+            <div className="flex items-center justify-between border-t border-gray-200 px-6 py-4">
+              <p className="text-sm text-gray-500">
+                Showing <span className="font-medium">{filteredFeedback.length}</span> of{" "}
+                <span className="font-medium">{feedbackConversations.length}</span> conversations
+              </p>
+              {feedbackConversations.length > 10 && (
+                <div className="flex items-center gap-2">
+                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    Previous
+                  </button>
+                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* Conversation Viewer Modal */}
+      {selectedConversation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-gray-200 bg-[#205493] px-6 py-4">
+              <div>
+                <h3 className="font-semibold text-white">Conversation Details</h3>
+                <p className="text-sm text-white/80">
+                  {selectedConversation.sessionId.substring(0, 12)}... • {selectedConversation.module}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium ${feedbackColors[selectedConversation.feedback]}`}
+                >
+                  {feedbackIcons[selectedConversation.feedback]}
+                  {selectedConversation.feedback.charAt(0).toUpperCase() + selectedConversation.feedback.slice(1)}
+                </span>
+                <button
+                  onClick={() => setSelectedConversation(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body - Conversation */}
+            <div className="max-h-[60vh] overflow-y-auto bg-gray-50 p-4">
+              <div className="space-y-4">
+                {selectedConversation.conversation && selectedConversation.conversation.length > 0 ? (
+                  selectedConversation.conversation.map((msg, index) => (
+                    <div
+                      key={index}
+                      className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-3 ${
+                          msg.role === "user"
+                            ? "bg-[#205493] text-white"
+                            : "bg-white text-gray-800 shadow-sm"
+                        }`}
+                      >
+                        <div
+                          className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
+                            msg.role === "user"
+                              ? "prose-invert prose-p:text-white prose-a:text-blue-200"
+                              : "prose-gray prose-a:text-[#205493]"
+                          }`}
+                        >
+                          <ReactMarkdown
+                            components={{
+                              a: ({ href, children }) => (
+                                <a
+                                  href={href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`underline hover:opacity-80 ${
+                                    msg.role === "user"
+                                      ? "text-blue-200"
+                                      : "text-[#205493]"
+                                  }`}
+                                >
+                                  {children}
+                                </a>
+                              ),
+                              p: ({ children }) => (
+                                <p className="mb-2 last:mb-0 text-sm leading-relaxed">
+                                  {children}
+                                </p>
+                              ),
+                              ul: ({ children }) => (
+                                <ul className="mb-2 ml-4 list-disc space-y-1 text-sm">
+                                  {children}
+                                </ul>
+                              ),
+                              ol: ({ children }) => (
+                                <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm">
+                                  {children}
+                                </ol>
+                              ),
+                              li: ({ children }) => (
+                                <li className="leading-relaxed">{children}</li>
+                              ),
+                              strong: ({ children }) => (
+                                <strong className="font-semibold">{children}</strong>
+                              ),
+                              h1: ({ children }) => (
+                                <h1 className="mb-2 text-base font-bold">{children}</h1>
+                              ),
+                              h2: ({ children }) => (
+                                <h2 className="mb-2 text-sm font-bold">{children}</h2>
+                              ),
+                              h3: ({ children }) => (
+                                <h3 className="mb-1 text-sm font-semibold">{children}</h3>
+                              ),
+                              code: ({ children }) => (
+                                <code className="rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-800">
+                                  {children}
+                                </code>
+                              ),
+                            }}
+                          >
+                            {msg.content}
+                          </ReactMarkdown>
+                        </div>
+                        <p
+                          className={`mt-2 text-xs ${
+                            msg.role === "user" ? "text-white/60" : "text-gray-400"
+                          }`}
+                        >
+                          {new Date(msg.timestamp).toLocaleTimeString("en-US", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-8 text-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mb-3 text-gray-300">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <p className="text-sm text-gray-500">Conversation details not available</p>
+                    <p className="mt-1 text-xs text-gray-400">The original messages may have expired</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="border-t border-gray-200 bg-white px-6 py-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-500">
+                  {selectedConversation.conversation?.length || 0} messages in conversation
+                </p>
+                <button
+                  onClick={() => setSelectedConversation(null)}
+                  className="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
-      </main>
+      )}
+
+      {/* Escalation Request Viewer Modal */}
+      {selectedEscalation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-gray-200 bg-[#205493] px-6 py-4">
+              <div>
+                <h3 className="font-semibold text-white">Escalation Request</h3>
+                <p className="text-sm text-white/80">
+                  {new Date(selectedEscalation.requestDate).toLocaleDateString("en-US", {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                  })}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedEscalation(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6">
+              {/* Contact Info */}
+              <div className="mb-6 flex items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#205493] text-lg font-medium text-white">
+                  {selectedEscalation.name
+                    .split(" ")
+                    .map((n) => n[0])
+                    .join("")}
+                </div>
+                <div>
+                  <p className="font-semibold text-gray-900">{selectedEscalation.name}</p>
+                  <p className="text-sm text-gray-500">{selectedEscalation.email}</p>
+                  <p className="text-sm text-gray-500">{selectedEscalation.phone}</p>
+                </div>
+              </div>
+
+              {/* Question */}
+              <div className="rounded-xl bg-gray-50 p-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  Question
+                </p>
+                <p className="text-sm leading-relaxed text-gray-800">
+                  {selectedEscalation.question}
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="border-t border-gray-200 bg-gray-50 px-6 py-4">
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setSelectedEscalation(null)}
+                  className="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-300"
+                >
+                  Close
+                </button>
+                <a
+                  href={`mailto:${selectedEscalation.email}`}
+                  className="rounded-lg bg-[#205493] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a4480]"
+                >
+                  Reply via Email
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

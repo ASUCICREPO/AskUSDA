@@ -30,6 +30,22 @@ export class USDAChatbotStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
+    // ==================== DynamoDB - Escalation Requests ====================
+    const escalationTable = new dynamodb.Table(this, 'EscalationRequests', {
+      tableName: 'AskUSDA-EscalationRequests',
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
+    escalationTable.addGlobalSecondaryIndex({
+      indexName: 'DateIndex',
+      partitionKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
     // ==================== OpenSearch Serverless Vector Collection (L2 Construct) ====================
     // Using @cdklabs/generative-ai-cdk-constructs which automatically handles:
     // - Encryption policy
@@ -241,6 +257,10 @@ export class USDAChatbotStack extends cdk.Stack {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SendMessageIntegration', webSocketHandler),
     });
 
+    webSocketApi.addRoute('submitFeedback', {
+      integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitFeedbackIntegration', webSocketHandler),
+    });
+
     const webSocketStage = new apigatewayv2.WebSocketStage(this, 'WebSocketStage', {
       webSocketApi,
       stageName: 'prod',
@@ -279,6 +299,79 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:guardrail/${guardrail.attrGuardrailId}`],
     }));
 
+    // ==================== Admin API Lambda ====================
+    const adminLambdaRole = new iam.Role(this, 'AdminLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // Grant DynamoDB access to admin Lambda
+    conversationLogsTable.grantReadWriteData(adminLambdaRole);
+    escalationTable.grantReadWriteData(adminLambdaRole);
+
+    const adminHandler = new lambda.Function(this, 'AdminHandler', {
+      functionName: 'AskUSDA-AdminHandler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'admin.handler',
+      code: lambda.Code.fromAsset('lambda-bundle'),
+      role: adminLambdaRole,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        CONVERSATION_TABLE: conversationLogsTable.tableName,
+        ESCALATION_TABLE: escalationTable.tableName,
+      },
+    });
+
+    // ==================== Admin HTTP API Gateway ====================
+    const adminApi = new apigatewayv2.HttpApi(this, 'AdminApi', {
+      apiName: 'AskUSDA-AdminAPI',
+      description: 'HTTP API for AskUSDA Admin Dashboard',
+      corsPreflight: {
+        allowHeaders: ['Content-Type', 'Authorization'],
+        allowMethods: [
+          apigatewayv2.CorsHttpMethod.GET,
+          apigatewayv2.CorsHttpMethod.POST,
+          apigatewayv2.CorsHttpMethod.DELETE,
+          apigatewayv2.CorsHttpMethod.OPTIONS,
+        ],
+        allowOrigins: ['*'],
+        maxAge: cdk.Duration.days(1),
+      },
+    });
+
+    // Add routes
+    const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration(
+      'AdminIntegration',
+      adminHandler
+    );
+
+    adminApi.addRoutes({
+      path: '/metrics',
+      methods: [apigatewayv2.HttpMethod.GET],
+      integration: adminIntegration,
+    });
+
+    adminApi.addRoutes({
+      path: '/feedback',
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      integration: adminIntegration,
+    });
+
+    adminApi.addRoutes({
+      path: '/escalations',
+      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      integration: adminIntegration,
+    });
+
+    adminApi.addRoutes({
+      path: '/escalations/{id}',
+      methods: [apigatewayv2.HttpMethod.DELETE],
+      integration: adminIntegration,
+    });
+
     // ==================== Amplify Hosting ====================
     // Note: You need to create a GitHub token secret in Secrets Manager first
     // aws secretsmanager create-secret --name github-token --secret-string "your-github-token"
@@ -292,6 +385,7 @@ export class USDAChatbotStack extends cdk.Stack {
       platform: 'WEB_COMPUTE',
       environmentVariables: [
         { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
+        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
       ],
       buildSpec: cdk.Fn.sub(`
 version: 1
@@ -322,6 +416,7 @@ frontend:
       stage: 'PRODUCTION',
       environmentVariables: [
         { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
+        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
       ],
     });
 
@@ -366,6 +461,18 @@ frontend:
       value: `https://master.${amplifyApp.attrDefaultDomain}`,
       description: 'Amplify App URL',
       exportName: 'AskUSDA-AmplifyUrl',
+    });
+
+    new cdk.CfnOutput(this, 'AdminApiUrl', {
+      value: adminApi.apiEndpoint,
+      description: 'Admin API URL',
+      exportName: 'AskUSDA-AdminApiUrl',
+    });
+
+    new cdk.CfnOutput(this, 'EscalationTableName', {
+      value: escalationTable.tableName,
+      description: 'DynamoDB Escalation Requests Table',
+      exportName: 'AskUSDA-EscalationTable',
     });
   }
 }

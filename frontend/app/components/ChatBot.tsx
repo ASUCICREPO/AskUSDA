@@ -17,16 +17,18 @@ interface Message {
   timestamp: Date;
   citations?: Citation[];
   isStreaming?: boolean;
+  feedback?: "positive" | "negative" | null;
 }
 
 interface WebSocketMessage {
-  type: "stream" | "response" | "typing" | "error";
+  type: "stream" | "response" | "typing" | "error" | "feedbackReceived";
   chunk?: string;
   isComplete?: boolean;
   message?: string;
   citations?: Citation[];
   blocked?: boolean;
   status?: boolean;
+  feedback?: "positive" | "negative";
 }
 
 const suggestedQuestions = [
@@ -219,6 +221,31 @@ export default function ChatBot() {
         streamingMessageIdRef.current = null;
         setIsTyping(false);
         break;
+
+      case "feedbackReceived":
+        console.log("Feedback received:", data.feedback);
+        break;
+    }
+  }, []);
+
+  // Send feedback to backend
+  const handleFeedback = useCallback((messageId: string, feedback: "positive" | "negative") => {
+    // Update local state immediately for responsive UI
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === messageId ? { ...msg, feedback } : msg
+      )
+    );
+
+    // Send to backend via WebSocket
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          action: "submitFeedback",
+          feedback,
+          messageId,
+        })
+      );
     }
   }, []);
 
@@ -277,7 +304,7 @@ export default function ChatBot() {
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage(inputValue);
@@ -501,6 +528,91 @@ export default function ChatBot() {
                         </div>
                       </div>
                     )}
+                    {/* Feedback Buttons - only for bot messages, not welcome message, not while streaming */}
+                    {message.sender === "bot" && message.id !== "1" && !message.isStreaming && (
+                      <div className="mt-3 border-t border-gray-200 pt-2">
+                        {message.feedback ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500">
+                              Thanks for your feedback!
+                            </span>
+                            {message.feedback === "positive" ? (
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="#22c55e"
+                                stroke="#22c55e"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+                              </svg>
+                            ) : (
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="#ef4444"
+                                stroke="#ef4444"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+                              </svg>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <span className="mr-2 text-xs text-gray-400">Was this helpful?</span>
+                            <button
+                              onClick={() => handleFeedback(message.id, "positive")}
+                              className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-green-50 hover:text-green-600 active:scale-95"
+                              aria-label="Thumbs up"
+                              title="Yes, this was helpful"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleFeedback(message.id, "negative")}
+                              className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-red-50 hover:text-red-600 active:scale-95"
+                              aria-label="Thumbs down"
+                              title="No, this wasn't helpful"
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -558,7 +670,7 @@ export default function ChatBot() {
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyDown}
                 placeholder="Type your question..."
                 disabled={isTyping}
                 className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20 disabled:bg-gray-50 disabled:cursor-not-allowed"
@@ -585,9 +697,6 @@ export default function ChatBot() {
                 </svg>
               </button>
             </div>
-            <p className="mt-2 text-center text-xs text-gray-400">
-              Powered by U.S. Department of Agriculture
-            </p>
           </div>
         </div>
       )}
