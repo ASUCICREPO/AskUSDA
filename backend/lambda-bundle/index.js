@@ -196,7 +196,7 @@ function buildContextFromRetrieval(retrievalResults) {
 // ==================== Bedrock Model Functions ====================
 
 async function generateStreamingResponse(connectionId, userMessage, context, conversationHistory) {
-  const modelId = `amazon.${BEDROCK_MODEL_ID}`;
+  const modelId = BEDROCK_MODEL_ID;
   
   // Build system prompt with context if available
   let systemPrompt = SYSTEM_PROMPT;
@@ -266,7 +266,7 @@ async function retrieveAndGenerate(query) {
       type: 'KNOWLEDGE_BASE',
       knowledgeBaseConfiguration: {
         knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        modelArn: `arn:aws:bedrock:${AWS_REGION}::foundation-model/amazon.${BEDROCK_MODEL_ID}`,
+        modelArn: `arn:aws:bedrock:${AWS_REGION}::foundation-model/${BEDROCK_MODEL_ID}`,
         generationConfiguration: {
           promptTemplate: {
             textPromptTemplate: `${SYSTEM_PROMPT}

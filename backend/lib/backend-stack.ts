@@ -259,21 +259,12 @@ export class USDAChatbotStack extends cdk.Stack {
           { type: 'SEXUAL', inputStrength: 'HIGH', outputStrength: 'HIGH' },
           { type: 'VIOLENCE', inputStrength: 'HIGH', outputStrength: 'HIGH' },
           { type: 'HATE', inputStrength: 'HIGH', outputStrength: 'HIGH' },
-          { type: 'INSULTS', inputStrength: 'HIGH', outputStrength: 'HIGH' },
-          { type: 'MISCONDUCT', inputStrength: 'HIGH', outputStrength: 'HIGH' },
+          { type: 'INSULTS', inputStrength: 'MEDIUM', outputStrength: 'MEDIUM' },
+          { type: 'MISCONDUCT', inputStrength: 'MEDIUM', outputStrength: 'MEDIUM' },
           { type: 'PROMPT_ATTACK', inputStrength: 'HIGH', outputStrength: 'NONE' },
         ],
       },
-      topicPolicyConfig: {
-        topicsConfig: [
-          {
-            name: 'OffTopic',
-            definition: 'Questions not related to USDA, agriculture, food safety, nutrition, or rural development',
-            examples: ['What is the weather today?', 'Tell me a joke', 'Who won the election?'],
-            type: 'DENY',
-          },
-        ],
-      },
+      // Removed topicPolicyConfig - was too restrictive for legitimate USDA questions
     });
 
     // Add guardrail to Lambda environment
