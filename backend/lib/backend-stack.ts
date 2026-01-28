@@ -144,7 +144,8 @@ export class USDAChatbotStack extends cdk.Stack {
           sourceConfiguration: {
             urlConfiguration: {
               seedUrls: [
-                { url: 'https://www.usda.gov/' },
+                { url: 'https://www.usda.gov/'},
+                { url: 'https://www.farmers.gov/'},
               ],
             },
           },

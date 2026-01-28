@@ -1,12 +1,32 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+
+interface Citation {
+  id: number;
+  text: string;
+  source: string;
+  score: number;
+}
 
 interface Message {
   id: string;
   text: string;
   sender: "user" | "bot";
   timestamp: Date;
+  citations?: Citation[];
+  isStreaming?: boolean;
+}
+
+interface WebSocketMessage {
+  type: "stream" | "response" | "typing" | "error";
+  chunk?: string;
+  isComplete?: boolean;
+  message?: string;
+  citations?: Citation[];
+  blocked?: boolean;
+  status?: boolean;
 }
 
 const suggestedQuestions = [
@@ -15,6 +35,8 @@ const suggestedQuestions = [
   "How to report a food safety issue?",
   "Find local USDA service centers",
 ];
+
+const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "";
 
 export default function ChatBot() {
   const [isOpen, setIsOpen] = useState(false);
@@ -29,8 +51,13 @@ export default function ChatBot() {
   ]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const currentStreamingMessageRef = useRef<string>("");
+  const streamingMessageIdRef = useRef<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -46,6 +73,171 @@ export default function ChatBot() {
     }
   }, [isOpen]);
 
+  // Connect to WebSocket when chat opens
+  const connectWebSocket = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN || isConnecting) {
+      return;
+    }
+
+    if (!WEBSOCKET_URL) {
+      console.warn("WebSocket URL not configured. Running in demo mode.");
+      setIsConnected(false);
+      return;
+    }
+
+    setIsConnecting(true);
+    console.log("Connecting to WebSocket:", WEBSOCKET_URL);
+
+    const ws = new WebSocket(WEBSOCKET_URL);
+
+    ws.onopen = () => {
+      console.log("WebSocket connected");
+      setIsConnected(true);
+      setIsConnecting(false);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data: WebSocketMessage = JSON.parse(event.data);
+        handleWebSocketMessage(data);
+      } catch (error) {
+        console.error("Failed to parse WebSocket message:", error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      setIsConnected(false);
+      setIsConnecting(false);
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket disconnected");
+      setIsConnected(false);
+      setIsConnecting(false);
+      wsRef.current = null;
+    };
+
+    wsRef.current = ws;
+  }, [isConnecting]);
+
+  // Handle incoming WebSocket messages
+  const handleWebSocketMessage = useCallback((data: WebSocketMessage) => {
+    switch (data.type) {
+      case "typing":
+        setIsTyping(data.status || false);
+        break;
+
+      case "stream":
+        if (data.chunk) {
+          currentStreamingMessageRef.current += data.chunk;
+          
+          // Create or update streaming message
+          if (!streamingMessageIdRef.current) {
+            streamingMessageIdRef.current = Date.now().toString();
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: streamingMessageIdRef.current!,
+                text: currentStreamingMessageRef.current,
+                sender: "bot",
+                timestamp: new Date(),
+                isStreaming: true,
+              },
+            ]);
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingMessageIdRef.current
+                  ? { ...msg, text: currentStreamingMessageRef.current }
+                  : msg
+              )
+            );
+          }
+        }
+
+        if (data.isComplete) {
+          // Mark streaming as complete
+          if (streamingMessageIdRef.current) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingMessageIdRef.current
+                  ? { ...msg, isStreaming: false }
+                  : msg
+              )
+            );
+          }
+        }
+        break;
+
+      case "response":
+        // Final response with citations - update the streaming message or add new one
+        if (streamingMessageIdRef.current) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMessageIdRef.current
+                ? {
+                    ...msg,
+                    text: data.message || msg.text,
+                    citations: data.citations,
+                    isStreaming: false,
+                  }
+                : msg
+            )
+          );
+        } else if (data.message) {
+          // Non-streaming response
+          const messageText = data.message;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              text: messageText,
+              sender: "bot",
+              timestamp: new Date(),
+              citations: data.citations,
+            },
+          ]);
+        }
+        // Reset streaming refs
+        currentStreamingMessageRef.current = "";
+        streamingMessageIdRef.current = null;
+        setIsTyping(false);
+        break;
+
+      case "error":
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            text: data.message || "An error occurred. Please try again.",
+            sender: "bot",
+            timestamp: new Date(),
+          },
+        ]);
+        currentStreamingMessageRef.current = "";
+        streamingMessageIdRef.current = null;
+        setIsTyping(false);
+        break;
+    }
+  }, []);
+
+  // Connect when chat opens
+  useEffect(() => {
+    if (isOpen && !wsRef.current) {
+      connectWebSocket();
+    }
+  }, [isOpen, connectWebSocket]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
   const handleSendMessage = async (text: string) => {
     if (!text.trim()) return;
 
@@ -58,19 +250,31 @@ export default function ChatBot() {
 
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
-    setIsTyping(true);
 
-    // Simulate bot response
-    setTimeout(() => {
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "Thank you for your question. I'm processing your request and will provide information about USDA programs and services shortly. Is there anything specific you'd like to know?",
-        sender: "bot",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, botMessage]);
-      setIsTyping(false);
-    }, 1500);
+    // Send via WebSocket if connected
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      setIsTyping(true);
+      wsRef.current.send(
+        JSON.stringify({
+          action: "sendMessage",
+          message: text.trim(),
+          useStreaming: true,
+        })
+      );
+    } else {
+      // Demo mode - simulate response
+      setIsTyping(true);
+      setTimeout(() => {
+        const botMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          text: "I'm currently running in demo mode. To connect to the USDA knowledge base, please ensure the backend WebSocket server is deployed and configured.",
+          sender: "bot",
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, botMessage]);
+        setIsTyping(false);
+      }, 1500);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -144,29 +348,47 @@ export default function ChatBot() {
               </div>
               <div>
                 <h3 className="font-semibold text-white">AskUSDA</h3>
-                <p className="text-xs text-white/80">Virtual Assistant</p>
+                <p className="text-xs text-white/80">
+                  {isConnecting
+                    ? "Connecting..."
+                    : isConnected
+                      ? "Online"
+                      : "Demo Mode"}
+                </p>
               </div>
             </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
-              aria-label="Close chat"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            <div className="flex items-center gap-2">
+              {/* Connection status indicator */}
+              <div
+                className={`h-2 w-2 rounded-full ${
+                  isConnected
+                    ? "bg-green-400"
+                    : isConnecting
+                      ? "animate-pulse bg-yellow-400"
+                      : "bg-gray-400"
+                }`}
+              />
+              <button
+                onClick={() => setIsOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+                aria-label="Close chat"
               >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           {/* Messages Area */}
@@ -178,24 +400,127 @@ export default function ChatBot() {
                   className={`flex ${message.sender === "user" ? "justify-end" : "justify-start"}`}
                 >
                   <div
-                    className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                    className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-3 ${
                       message.sender === "user"
                         ? "bg-[#205493] text-white"
                         : "bg-white text-gray-800 shadow-sm"
                     }`}
                   >
-                    <p className="text-sm leading-relaxed">{message.text}</p>
+                    <div
+                      className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
+                        message.sender === "user"
+                          ? "prose-invert prose-p:text-white prose-a:text-blue-200"
+                          : "prose-gray prose-a:text-[#205493]"
+                      }`}
+                    >
+                      <ReactMarkdown
+                        components={{
+                          // Style links to be clickable and visible
+                          a: ({ href, children }) => (
+                            <a
+                              href={href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={`underline hover:opacity-80 ${
+                                message.sender === "user"
+                                  ? "text-blue-200"
+                                  : "text-[#205493]"
+                              }`}
+                            >
+                              {children}
+                            </a>
+                          ),
+                          // Style paragraphs
+                          p: ({ children }) => (
+                            <p className="mb-2 last:mb-0 text-sm leading-relaxed">
+                              {children}
+                            </p>
+                          ),
+                          // Style unordered lists with proper bullets
+                          ul: ({ children }) => (
+                            <ul className="mb-2 ml-4 list-disc space-y-1 text-sm">
+                              {children}
+                            </ul>
+                          ),
+                          // Style ordered lists
+                          ol: ({ children }) => (
+                            <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm">
+                              {children}
+                            </ol>
+                          ),
+                          // Style list items
+                          li: ({ children }) => (
+                            <li className="leading-relaxed">{children}</li>
+                          ),
+                          // Style bold text
+                          strong: ({ children }) => (
+                            <strong className="font-semibold">{children}</strong>
+                          ),
+                          // Style headings
+                          h1: ({ children }) => (
+                            <h1 className="mb-2 text-base font-bold">{children}</h1>
+                          ),
+                          h2: ({ children }) => (
+                            <h2 className="mb-2 text-sm font-bold">{children}</h2>
+                          ),
+                          h3: ({ children }) => (
+                            <h3 className="mb-1 text-sm font-semibold">{children}</h3>
+                          ),
+                          // Style code blocks
+                          code: ({ children }) => (
+                            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-800">
+                              {children}
+                            </code>
+                          ),
+                        }}
+                      >
+                        {message.text}
+                      </ReactMarkdown>
+                      {message.isStreaming && (
+                        <span className="ml-1 inline-block h-4 w-1 animate-pulse bg-gray-400" />
+                      )}
+                    </div>
+                    {/* Citations */}
+                    {message.citations && message.citations.length > 0 && (
+                      <div className="mt-3 border-t border-gray-200 pt-2">
+                        <p className="mb-1 text-xs font-medium text-gray-500">
+                          Sources:
+                        </p>
+                        <div className="space-y-1">
+                          {message.citations.slice(0, 3).map((citation) => (
+                            <a
+                              key={citation.id}
+                              href={citation.source}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block truncate text-xs text-[#205493] hover:underline"
+                            >
+                              {citation.source}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
 
-              {isTyping && (
+              {isTyping && !streamingMessageIdRef.current && (
                 <div className="flex justify-start">
                   <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">
                     <div className="flex gap-1">
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "0ms" }} />
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "150ms" }} />
-                      <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "300ms" }} />
+                      <span
+                        className="h-2 w-2 animate-bounce rounded-full bg-gray-400"
+                        style={{ animationDelay: "0ms" }}
+                      />
+                      <span
+                        className="h-2 w-2 animate-bounce rounded-full bg-gray-400"
+                        style={{ animationDelay: "150ms" }}
+                      />
+                      <span
+                        className="h-2 w-2 animate-bounce rounded-full bg-gray-400"
+                        style={{ animationDelay: "300ms" }}
+                      />
                     </div>
                   </div>
                 </div>
@@ -207,7 +532,9 @@ export default function ChatBot() {
             {/* Suggested Questions - only show when there's just the welcome message */}
             {messages.length === 1 && (
               <div className="mt-4">
-                <p className="mb-2 text-xs font-medium text-gray-500">Suggested questions:</p>
+                <p className="mb-2 text-xs font-medium text-gray-500">
+                  Suggested questions:
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {suggestedQuestions.map((question, index) => (
                     <button
@@ -233,11 +560,12 @@ export default function ChatBot() {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Type your question..."
-                className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20"
+                disabled={isTyping}
+                className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20 disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={() => handleSendMessage(inputValue)}
-                disabled={!inputValue.trim()}
+                disabled={!inputValue.trim() || isTyping}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-[#205493] text-white transition-colors hover:bg-[#1a4480] disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Send message"
               >
