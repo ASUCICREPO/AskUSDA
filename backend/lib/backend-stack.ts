@@ -4,8 +4,10 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as apigatewayv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
@@ -297,6 +299,43 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:guardrail/${guardrail.attrGuardrailId}`],
     }));
 
+    // ==================== Cognito User Pool for Admin Authentication ====================
+    const adminUserPool = new cognito.UserPool(this, 'AdminUserPool', {
+      userPoolName: 'AskUSDA-AdminPool',
+      selfSignUpEnabled: false, // Only admins can create users
+      signInAliases: {
+        email: true, // Use email as the sign-in identifier
+      },
+      autoVerify: {
+        email: true,
+      },
+      standardAttributes: {
+        email: {
+          required: true,
+          mutable: true,
+        },
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // App client for the admin dashboard
+    const adminAppClient = adminUserPool.addClient('AdminAppClient', {
+      authFlows: {
+        userPassword: true,
+        userSrp: true,
+      },
+      generateSecret: false, // For browser-based apps
+      preventUserExistenceErrors: true,
+    });
+
     // ==================== Admin API Lambda ====================
     const adminLambdaRole = new iam.Role(this, 'AdminLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -340,33 +379,60 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
 
+    // JWT Authorizer for Cognito
+    const jwtAuthorizer = new apigatewayv2_authorizers.HttpJwtAuthorizer(
+      'AdminJwtAuthorizer',
+      `https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com/${adminUserPool.userPoolId}`,
+      {
+        jwtAudience: [adminAppClient.userPoolClientId],
+      }
+    );
+
     // Add routes
     const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration(
       'AdminIntegration',
       adminHandler
     );
 
+    // Protected routes (require Cognito auth)
     adminApi.addRoutes({
       path: '/metrics',
       methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/feedback',
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/escalations',
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/escalations/{id}',
       methods: [apigatewayv2.HttpMethod.DELETE],
+      integration: adminIntegration,
+      authorizer: jwtAuthorizer,
+    });
+
+    // Public routes (no auth required - for submitting feedback/escalations from chatbot)
+    adminApi.addRoutes({
+      path: '/feedback',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: adminIntegration,
+    });
+
+    adminApi.addRoutes({
+      path: '/escalations',
+      methods: [apigatewayv2.HttpMethod.POST],
       integration: adminIntegration,
     });
 
@@ -417,6 +483,19 @@ export class USDAChatbotStack extends cdk.Stack {
       value: escalationTable.tableName,
       description: 'DynamoDB Escalation Requests Table',
       exportName: 'AskUSDA-EscalationTable',
+    });
+
+    // Cognito Outputs
+    new cdk.CfnOutput(this, 'AdminUserPoolId', {
+      value: adminUserPool.userPoolId,
+      description: 'Cognito User Pool ID for admin authentication',
+      exportName: 'AskUSDA-AdminUserPoolId',
+    });
+
+    new cdk.CfnOutput(this, 'AdminUserPoolClientId', {
+      value: adminAppClient.userPoolClientId,
+      description: 'Cognito App Client ID for admin dashboard',
+      exportName: 'AskUSDA-AdminUserPoolClientId',
     });
   }
 }
