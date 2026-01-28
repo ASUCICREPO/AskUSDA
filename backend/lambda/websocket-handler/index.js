@@ -183,6 +183,7 @@ async function saveEscalation(name, email, phone, question, sessionId) {
   const escalationId = uuidv4();
   const now = new Date();
   const timestamp = now.toISOString();
+  const date = timestamp.split('T')[0]; // For GSI
   const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
 
   await docClient.send(new PutCommand({
@@ -190,6 +191,7 @@ async function saveEscalation(name, email, phone, question, sessionId) {
     Item: {
       escalationId,
       timestamp,
+      date,
       name,
       email,
       phone: phone || '',

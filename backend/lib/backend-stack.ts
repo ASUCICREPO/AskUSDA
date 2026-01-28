@@ -49,8 +49,8 @@ export class USDAChatbotStack extends cdk.Stack {
     // ==================== DynamoDB - Escalation Requests ====================
     const escalationTable = new dynamodb.Table(this, 'EscalationRequests', {
       tableName: 'AskUSDA-EscalationRequests',
-      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: 'escalationId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
@@ -58,7 +58,7 @@ export class USDAChatbotStack extends cdk.Stack {
 
     escalationTable.addGlobalSecondaryIndex({
       indexName: 'DateIndex',
-      partitionKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
@@ -203,6 +203,7 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     conversationHistoryTable.grantReadWriteData(lambdaRole);
+    escalationTable.grantReadWriteData(lambdaRole);
 
     // Bedrock permissions - Nova Pro & Titan Embeddings
     lambdaRole.addToPolicy(new iam.PolicyStatement({

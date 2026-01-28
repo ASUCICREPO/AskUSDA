@@ -238,6 +238,7 @@ async function createEscalation(body) {
   const escalationId = uuidv4();
   const now = new Date();
   const timestamp = now.toISOString();
+  const date = timestamp.split('T')[0]; // For GSI
   const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
 
   try {
@@ -246,6 +247,7 @@ async function createEscalation(body) {
       Item: {
         escalationId,
         timestamp,
+        date,
         name,
         email,
         phone: phone || '',
