@@ -327,8 +327,8 @@ export default function ChatBot() {
           <button
             onClick={() => setIsOpen(true)}
             className={`
-              flex items-center gap-2 rounded-full bg-[#205493] px-5 py-3
-              text-white shadow-lg transition-all duration-300 hover:bg-[#1a4480]
+              flex items-center gap-2 rounded-full bg-[#1a4a8a] px-5 py-3
+              text-white shadow-lg transition-all duration-300 hover:bg-[#002d72]
               hover:shadow-xl
               ${isHovered ? "scale-105" : "scale-100"}
             `}
@@ -356,22 +356,15 @@ export default function ChatBot() {
       {isOpen && (
         <div className="fixed bottom-6 right-6 z-50 flex h-[520px] w-[380px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
           {/* Header */}
-          <div className="flex items-center justify-between bg-[#205493] px-4 py-3">
+          <div className="flex items-center justify-between bg-[#002d72] px-4 py-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="white"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white p-1">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/usda-symbol.svg"
+                  alt="USDA"
+                  className="h-full w-full"
+                />
               </div>
               <div>
                 <h3 className="font-semibold text-white">AskUSDA</h3>
@@ -429,7 +422,7 @@ export default function ChatBot() {
                   <div
                     className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-3 ${
                       message.sender === "user"
-                        ? "bg-[#205493] text-white"
+                        ? "bg-[#002d72] text-white"
                         : "bg-white text-gray-800 shadow-sm"
                     }`}
                   >
@@ -437,7 +430,7 @@ export default function ChatBot() {
                       className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
                         message.sender === "user"
                           ? "prose-invert prose-p:text-white prose-a:text-blue-200"
-                          : "prose-gray prose-a:text-[#205493]"
+                          : "prose-gray prose-a:text-[#002d72]"
                       }`}
                     >
                       <ReactMarkdown
@@ -451,7 +444,7 @@ export default function ChatBot() {
                               className={`underline hover:opacity-80 ${
                                 message.sender === "user"
                                   ? "text-blue-200"
-                                  : "text-[#205493]"
+                                  : "text-[#002d72]"
                               }`}
                             >
                               {children}
@@ -520,7 +513,7 @@ export default function ChatBot() {
                               href={citation.source}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="block truncate text-xs text-[#205493] hover:underline"
+                              className="block truncate text-xs text-[#002d72] hover:underline"
                             >
                               {citation.source}
                             </a>
@@ -652,7 +645,7 @@ export default function ChatBot() {
                     <button
                       key={index}
                       onClick={() => handleSuggestedQuestion(question)}
-                      className="rounded-full border border-[#205493]/30 bg-white px-3 py-1.5 text-xs text-[#205493] transition-colors hover:bg-[#205493] hover:text-white"
+                      className="rounded-full border border-[#002d72]/30 bg-white px-3 py-1.5 text-xs text-[#002d72] transition-colors hover:bg-[#002d72] hover:text-white"
                     >
                       {question}
                     </button>
@@ -673,12 +666,12 @@ export default function ChatBot() {
                 onKeyDown={handleKeyDown}
                 placeholder="Type your question..."
                 disabled={isTyping}
-                className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20 disabled:bg-gray-50 disabled:cursor-not-allowed"
+                className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#002d72] focus:ring-2 focus:ring-[#002d72]/20 disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={() => handleSendMessage(inputValue)}
                 disabled={!inputValue.trim() || isTyping}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-[#205493] text-white transition-colors hover:bg-[#1a4480] disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[#002d72] text-white transition-colors hover:bg-[#001f4d] disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Send message"
               >
                 <svg

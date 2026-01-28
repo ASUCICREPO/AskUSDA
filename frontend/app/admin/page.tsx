@@ -212,10 +212,13 @@ export default function AdminPage() {
       <header className="border-b border-gray-200 bg-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#205493]">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white p-1">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/usda-symbol.svg"
+                alt="USDA"
+                className="h-full w-full"
+              />
             </div>
             <div>
               <h1 className="text-xl font-bold text-gray-900">AskUSDA</h1>
@@ -254,7 +257,7 @@ export default function AdminPage() {
         {isLoading && (
           <div className="mb-8 flex items-center justify-center py-12">
             <div className="flex items-center gap-3">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#205493] border-t-transparent" />
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#002d72] border-t-transparent" />
               <span className="text-gray-600">Loading dashboard data...</span>
             </div>
           </div>
@@ -291,7 +294,7 @@ export default function AdminPage() {
               className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
             >
               <div className="flex items-center justify-between">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#205493]/10 text-[#205493]">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#002d72]/10 text-[#002d72]">
                   {stat.icon}
                 </div>
                 <span
@@ -352,7 +355,7 @@ export default function AdminPage() {
                     <tr key={request.id} className="transition-colors hover:bg-gray-50">
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#205493] text-sm font-medium text-white">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#002d72] text-sm font-medium text-white">
                             {request.name
                               .split(" ")
                               .map((n) => n[0])
@@ -381,7 +384,7 @@ export default function AdminPage() {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => setSelectedEscalation(request)}
-                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]"
+                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#002d72]"
                             title="View question"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -437,7 +440,7 @@ export default function AdminPage() {
               <select
                 value={feedbackFilter}
                 onChange={(e) => setFeedbackFilter(e.target.value)}
-                className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-[#205493] focus:ring-2 focus:ring-[#205493]/20"
+                className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-[#002d72] focus:ring-2 focus:ring-[#002d72]/20"
               >
                 <option value="all">All Feedback</option>
                 <option value="positive">Positive</option>
@@ -497,7 +500,7 @@ export default function AdminPage() {
                       <td className="whitespace-nowrap px-6 py-4">
                         <button
                           onClick={() => setSelectedConversation(conv)}
-                          className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#205493]"
+                          className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#002d72]"
                           title="View conversation"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -540,7 +543,7 @@ export default function AdminPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-gray-200 bg-[#205493] px-6 py-4">
+            <div className="flex items-center justify-between border-b border-gray-200 bg-[#002d72] px-6 py-4">
               <div>
                 <h3 className="font-semibold text-white">Conversation Details</h3>
                 <p className="text-sm text-white/80">
@@ -578,7 +581,7 @@ export default function AdminPage() {
                       <div
                         className={`max-w-[85%] overflow-hidden rounded-2xl px-4 py-3 ${
                           msg.role === "user"
-                            ? "bg-[#205493] text-white"
+                            ? "bg-[#002d72] text-white"
                             : "bg-white text-gray-800 shadow-sm"
                         }`}
                       >
@@ -586,7 +589,7 @@ export default function AdminPage() {
                           className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
                             msg.role === "user"
                               ? "prose-invert prose-p:text-white prose-a:text-blue-200"
-                              : "prose-gray prose-a:text-[#205493]"
+                              : "prose-gray prose-a:text-[#002d72]"
                           }`}
                         >
                           <ReactMarkdown
@@ -599,7 +602,7 @@ export default function AdminPage() {
                                   className={`underline hover:opacity-80 ${
                                     msg.role === "user"
                                       ? "text-blue-200"
-                                      : "text-[#205493]"
+                                      : "text-[#002d72]"
                                   }`}
                                 >
                                   {children}
@@ -693,7 +696,7 @@ export default function AdminPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-gray-200 bg-[#205493] px-6 py-4">
+            <div className="flex items-center justify-between border-b border-gray-200 bg-[#002d72] px-6 py-4">
               <div>
                 <h3 className="font-semibold text-white">Escalation Request</h3>
                 <p className="text-sm text-white/80">
@@ -719,7 +722,7 @@ export default function AdminPage() {
             <div className="p-6">
               {/* Contact Info */}
               <div className="mb-6 flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#205493] text-lg font-medium text-white">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#002d72] text-lg font-medium text-white">
                   {selectedEscalation.name
                     .split(" ")
                     .map((n) => n[0])
@@ -754,7 +757,7 @@ export default function AdminPage() {
                 </button>
                 <a
                   href={`mailto:${selectedEscalation.email}`}
-                  className="rounded-lg bg-[#205493] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a4480]"
+                  className="rounded-lg bg-[#002d72] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#001f4d]"
                 >
                   Reply via Email
                 </a>
