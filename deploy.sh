@@ -101,7 +101,8 @@ else
                   "ssm:*",
                   "events:*",
                   "aoss:*",
-                  "secretsmanager:*"
+                  "secretsmanager:*",
+                  "ecr:*"
               ],
               "Resource": "*"
           },
