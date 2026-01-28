@@ -194,6 +194,76 @@ export class USDAChatbotStack extends cdk.Stack {
     // Ensure data source is created after knowledge base
     webCrawlerDataSource.addDependency(knowledgeBase);
 
+    // ==================== Custom Resource to Sync Knowledge Base ====================
+    // This Lambda will automatically start ingestion for the data source
+    const kbSyncRole = new iam.Role(this, 'KBSyncRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    kbSyncRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:StartIngestionJob'],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
+    }));
+
+    const kbSyncFunction = new lambda.Function(this, 'KBSyncFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      role: kbSyncRole,
+      code: lambda.Code.fromInline(`
+        const AWS = require('aws-sdk');
+        const bedrock = new AWS.BedrockAgent();
+        
+        exports.handler = async (event) => {
+          console.log('Event:', JSON.stringify(event));
+          
+          if (event.RequestType === 'Delete') {
+            return { Status: 'SUCCESS' };
+          }
+          
+          try {
+            const kbId = event.ResourceProperties.KnowledgeBaseId;
+            const dataSourceId = event.ResourceProperties.DataSourceId;
+            
+            console.log('Starting ingestion for KB:', kbId, 'DataSource:', dataSourceId);
+            
+            const response = await bedrock.startIngestionJob({
+              knowledgeBaseId: kbId,
+              dataSourceId: dataSourceId,
+            }).promise();
+            
+            console.log('Ingestion started:', response);
+            
+            return {
+              Status: 'SUCCESS',
+              PhysicalResourceId: response.ingestionJobId,
+            };
+          } catch (error) {
+            console.error('Error:', error);
+            return {
+              Status: 'FAILED',
+              Reason: error.message,
+            };
+          }
+        };
+      `),
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    // Custom resource to trigger KB sync
+    const kbSyncCustomResource = new cdk.CustomResource(this, 'KBSyncCustomResource', {
+      serviceToken: kbSyncFunction.functionArn,
+      properties: {
+        KnowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+        DataSourceId: webCrawlerDataSource.attrDataSourceId,
+      },
+    });
+
+    kbSyncCustomResource.node.addDependency(webCrawlerDataSource);
+
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
