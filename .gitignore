@@ -25,6 +25,7 @@ out/
 # Compiled JavaScript files
 *.js
 !jest.config.js
+!backend/lambda/**/*.js
 *.d.ts
 
 # TypeScript cache

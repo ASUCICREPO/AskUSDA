@@ -1,0 +1,384 @@
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
+const { v4: uuidv4 } = require('uuid');
+
+// Initialize clients
+const dynamoClient = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const bedrockAgentClient = new BedrockAgentRuntimeClient({});
+const bedrockRuntimeClient = new BedrockRuntimeClient({});
+
+// Environment variables
+const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
+const CONVERSATION_TABLE = process.env.CONVERSATION_TABLE;
+const ESCALATION_TABLE = process.env.ESCALATION_TABLE;
+const GUARDRAIL_ID = process.env.GUARDRAIL_ID;
+const GUARDRAIL_VERSION = process.env.GUARDRAIL_VERSION || 'DRAFT';
+const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
+
+// Helper to send message to WebSocket client
+async function sendToClient(connectionId, data) {
+  const endpoint = WEBSOCKET_ENDPOINT.replace('wss://', 'https://').replace('/prod', '');
+  const apiGatewayClient = new ApiGatewayManagementApiClient({
+    endpoint: endpoint,
+  });
+
+  try {
+    await apiGatewayClient.send(new PostToConnectionCommand({
+      ConnectionId: connectionId,
+      Data: JSON.stringify(data),
+    }));
+  } catch (error) {
+    console.error('Error sending to client:', error);
+    if (error.statusCode === 410) {
+      console.log('Client disconnected');
+    }
+    throw error;
+  }
+}
+
+// Apply guardrails to input
+async function applyGuardrails(text) {
+  if (!GUARDRAIL_ID) {
+    return { blocked: false, text };
+  }
+
+  try {
+    const response = await bedrockRuntimeClient.send(new ApplyGuardrailCommand({
+      guardrailIdentifier: GUARDRAIL_ID,
+      guardrailVersion: GUARDRAIL_VERSION,
+      source: 'INPUT',
+      content: [{ text: { text } }],
+    }));
+
+    if (response.action === 'GUARDRAIL_INTERVENED') {
+      return {
+        blocked: true,
+        message: response.outputs?.[0]?.text || "I'm sorry, but I can't help with that request. Please ask about USDA programs and services.",
+      };
+    }
+
+    return { blocked: false, text };
+  } catch (error) {
+    console.error('Guardrail error:', error);
+    return { blocked: false, text };
+  }
+}
+
+// Query Knowledge Base
+async function queryKnowledgeBase(question, sessionId) {
+  const startTime = Date.now();
+  
+  const params = {
+    input: { text: question },
+    retrieveAndGenerateConfiguration: {
+      type: 'KNOWLEDGE_BASE',
+      knowledgeBaseConfiguration: {
+        knowledgeBaseId: KNOWLEDGE_BASE_ID,
+        modelArn: `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
+        retrievalConfiguration: {
+          vectorSearchConfiguration: {
+            numberOfResults: 5,
+          },
+        },
+        generationConfiguration: {
+          inferenceConfig: {
+            textInferenceConfig: {
+              maxTokens: 2048,
+              temperature: 0.7,
+              topP: 0.9,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  if (sessionId) {
+    params.sessionId = sessionId;
+  }
+
+  const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
+  const responseTimeMs = Date.now() - startTime;
+
+  // Extract citations
+  const citations = response.citations?.map((citation, index) => ({
+    id: index + 1,
+    text: citation.generatedResponsePart?.textResponsePart?.text || '',
+    source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
+            citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
+            'Unknown source',
+    score: citation.retrievedReferences?.[0]?.score || 0,
+  })) || [];
+
+  return {
+    answer: response.output?.text || "I couldn't find relevant information. Please try rephrasing your question.",
+    citations,
+    sessionId: response.sessionId,
+    responseTimeMs,
+  };
+}
+
+// Save conversation to DynamoDB
+async function saveConversation(conversationId, sessionId, question, answer, citations, responseTimeMs) {
+  const now = new Date();
+  const timestamp = now.toISOString();
+  const date = timestamp.split('T')[0];
+  const ttl = Math.floor(now.getTime() / 1000) + (90 * 24 * 60 * 60); // 90 days TTL
+
+  await docClient.send(new PutCommand({
+    TableName: CONVERSATION_TABLE,
+    Item: {
+      conversationId,
+      timestamp,
+      sessionId,
+      question,
+      answer,
+      answerPreview: answer.substring(0, 500),
+      citations: JSON.stringify(citations),
+      responseTimeMs,
+      date,
+      ttl,
+    },
+  }));
+}
+
+// Update feedback in DynamoDB
+async function updateFeedback(conversationId, feedback) {
+  // First, find the conversation by conversationId
+  const queryResult = await docClient.send(new QueryCommand({
+    TableName: CONVERSATION_TABLE,
+    KeyConditionExpression: 'conversationId = :cid',
+    ExpressionAttributeValues: {
+      ':cid': conversationId,
+    },
+    Limit: 1,
+  }));
+
+  if (!queryResult.Items || queryResult.Items.length === 0) {
+    throw new Error('Conversation not found');
+  }
+
+  const item = queryResult.Items[0];
+  
+  await docClient.send(new UpdateCommand({
+    TableName: CONVERSATION_TABLE,
+    Key: {
+      conversationId: item.conversationId,
+      timestamp: item.timestamp,
+    },
+    UpdateExpression: 'SET feedback = :feedback, feedbackTs = :feedbackTs',
+    ExpressionAttributeValues: {
+      ':feedback': feedback === 'positive' ? 'pos' : 'neg',
+      ':feedbackTs': new Date().toISOString(),
+    },
+  }));
+}
+
+// Save escalation request
+async function saveEscalation(name, email, phone, question, sessionId) {
+  const escalationId = uuidv4();
+  const now = new Date();
+  const timestamp = now.toISOString();
+  const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
+
+  await docClient.send(new PutCommand({
+    TableName: ESCALATION_TABLE,
+    Item: {
+      escalationId,
+      timestamp,
+      name,
+      email,
+      phone: phone || '',
+      question,
+      sessionId: sessionId || '',
+      status: 'pending',
+      ttl,
+    },
+  }));
+
+  return escalationId;
+}
+
+// Handle sendMessage action
+async function handleSendMessage(connectionId, body) {
+  const { message, sessionId } = body;
+
+  if (!message) {
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'Message is required',
+    });
+    return;
+  }
+
+  // Send typing indicator
+  await sendToClient(connectionId, { type: 'typing', isTyping: true });
+
+  try {
+    // Apply guardrails
+    const guardrailResult = await applyGuardrails(message);
+    
+    if (guardrailResult.blocked) {
+      await sendToClient(connectionId, {
+        type: 'message',
+        message: guardrailResult.message,
+        blocked: true,
+      });
+      return;
+    }
+
+    // Query Knowledge Base
+    const result = await queryKnowledgeBase(message, sessionId);
+    
+    // Generate conversation ID
+    const conversationId = uuidv4();
+
+    // Save to DynamoDB
+    await saveConversation(
+      conversationId,
+      result.sessionId,
+      message,
+      result.answer,
+      result.citations,
+      result.responseTimeMs
+    );
+
+    // Send response to client
+    await sendToClient(connectionId, {
+      type: 'message',
+      message: result.answer,
+      citations: result.citations,
+      conversationId,
+      sessionId: result.sessionId,
+      responseTimeMs: result.responseTimeMs,
+    });
+
+  } catch (error) {
+    console.error('Error processing message:', error);
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'An error occurred while processing your request. Please try again.',
+    });
+  }
+}
+
+// Handle submitFeedback action
+async function handleSubmitFeedback(connectionId, body) {
+  const { conversationId, feedback } = body;
+
+  if (!conversationId || !feedback) {
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'conversationId and feedback are required',
+    });
+    return;
+  }
+
+  try {
+    await updateFeedback(conversationId, feedback);
+    
+    await sendToClient(connectionId, {
+      type: 'feedbackConfirmation',
+      success: true,
+      conversationId,
+      feedback,
+    });
+  } catch (error) {
+    console.error('Error saving feedback:', error);
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'Failed to save feedback',
+    });
+  }
+}
+
+// Handle submitEscalation action
+async function handleSubmitEscalation(connectionId, body) {
+  const { name, email, phone, question, sessionId } = body;
+
+  if (!name || !email || !question) {
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'Name, email, and question are required',
+    });
+    return;
+  }
+
+  try {
+    const escalationId = await saveEscalation(name, email, phone, question, sessionId);
+    
+    await sendToClient(connectionId, {
+      type: 'escalationConfirmation',
+      success: true,
+      escalationId,
+      message: 'Your support request has been submitted. Our team will contact you soon.',
+    });
+  } catch (error) {
+    console.error('Error saving escalation:', error);
+    await sendToClient(connectionId, {
+      type: 'error',
+      message: 'Failed to submit support request',
+    });
+  }
+}
+
+// Main handler
+exports.handler = async (event) => {
+  console.log('Event:', JSON.stringify(event, null, 2));
+
+  const { requestContext, body } = event;
+  const { connectionId, routeKey } = requestContext;
+
+  try {
+    switch (routeKey) {
+      case '$connect':
+        console.log('Client connected:', connectionId);
+        return { statusCode: 200, body: 'Connected' };
+
+      case '$disconnect':
+        console.log('Client disconnected:', connectionId);
+        return { statusCode: 200, body: 'Disconnected' };
+
+      case 'sendMessage':
+        await handleSendMessage(connectionId, JSON.parse(body || '{}'));
+        break;
+
+      case 'submitFeedback':
+        await handleSubmitFeedback(connectionId, JSON.parse(body || '{}'));
+        break;
+
+      case 'submitEscalation':
+        await handleSubmitEscalation(connectionId, JSON.parse(body || '{}'));
+        break;
+
+      case '$default':
+      default:
+        // Try to parse the body and route based on action
+        const parsedBody = JSON.parse(body || '{}');
+        const action = parsedBody.action;
+
+        if (action === 'sendMessage') {
+          await handleSendMessage(connectionId, parsedBody);
+        } else if (action === 'submitFeedback') {
+          await handleSubmitFeedback(connectionId, parsedBody);
+        } else if (action === 'submitEscalation') {
+          await handleSubmitEscalation(connectionId, parsedBody);
+        } else {
+          await sendToClient(connectionId, {
+            type: 'error',
+            message: `Unknown action: ${action || routeKey}`,
+          });
+        }
+        break;
+    }
+
+    return { statusCode: 200, body: 'OK' };
+  } catch (error) {
+    console.error('Handler error:', error);
+    return { statusCode: 500, body: 'Internal Server Error' };
+  }
+};

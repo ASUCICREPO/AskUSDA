@@ -4,7 +4,11 @@
   "description": "WebSocket handler for AskUSDA chatbot",
   "main": "index.js",
   "dependencies": {
-    "aws-sdk": "^2.1691.0",
-    "uuid": "^9.0.1"
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.0.0",
+    "@aws-sdk/client-bedrock-agent-runtime": "^3.0.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "uuid": "^9.0.0"
   }
 }
