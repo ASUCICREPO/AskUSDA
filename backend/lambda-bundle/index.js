@@ -336,6 +336,52 @@ async function handleDisconnect(connectionId) {
   return { statusCode: 200, body: 'Disconnected' };
 }
 
+async function saveFeedback(connectionId, feedback) {
+  const timestamp = new Date().toISOString();
+  const ttl = Math.floor(Date.now() / 1000) + 86400 * 90; // 90 days TTL
+  
+  await docClient.send(new PutCommand({
+    TableName: CONVERSATION_TABLE,
+    Item: {
+      connectionId,
+      timestamp,
+      sessionId: connectionId,
+      role: 'feedback',
+      content: feedback,
+      feedback,
+      ttl,
+    },
+  }));
+}
+
+async function handleFeedback(connectionId, body) {
+  let request;
+  try {
+    request = JSON.parse(body || '{}');
+  } catch {
+    await sendToClient(connectionId, { type: 'error', message: 'Invalid JSON format' });
+    return { statusCode: 400, body: 'Invalid JSON' };
+  }
+  
+  const { feedback } = request;
+  
+  if (!feedback || !['positive', 'negative', 'neutral'].includes(feedback)) {
+    await sendToClient(connectionId, { type: 'error', message: 'Invalid feedback value' });
+    return { statusCode: 400, body: 'Invalid feedback' };
+  }
+  
+  try {
+    await saveFeedback(connectionId, feedback);
+    await sendToClient(connectionId, { type: 'feedbackReceived', feedback });
+    console.log(`Feedback saved for ${connectionId}: ${feedback}`);
+    return { statusCode: 200, body: 'Feedback saved' };
+  } catch (error) {
+    console.error('Error saving feedback:', error);
+    await sendToClient(connectionId, { type: 'error', message: 'Failed to save feedback' });
+    return { statusCode: 500, body: 'Error saving feedback' };
+  }
+}
+
 async function handleSendMessage(connectionId, body) {
   let request;
   try {
@@ -345,7 +391,12 @@ async function handleSendMessage(connectionId, body) {
     return { statusCode: 400, body: 'Invalid JSON' };
   }
   
-  const { message, useStreaming = true } = request;
+  const { message, useStreaming = true, action } = request;
+  
+  // Handle feedback action
+  if (action === 'submitFeedback') {
+    return handleFeedback(connectionId, body);
+  }
   
   if (!message || typeof message !== 'string' || !message.trim()) {
     await sendToClient(connectionId, { type: 'error', message: 'Please provide a message' });
@@ -445,6 +496,8 @@ exports.handler = async (event) => {
       case 'sendMessage':
       case '$default':
         return handleSendMessage(connectionId, body);
+      case 'submitFeedback':
+        return handleFeedback(connectionId, body);
       default:
         console.warn(`Unknown route: ${routeKey}`);
         return { statusCode: 400, body: `Unknown route: ${routeKey}` };
