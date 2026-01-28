@@ -57,7 +57,7 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     escalationTable.addGlobalSecondaryIndex({
-      indexName: 'DateIndex',
+      indexName: 'DateTimestampIndex',
       partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
