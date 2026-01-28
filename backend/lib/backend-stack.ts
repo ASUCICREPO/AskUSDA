@@ -6,8 +6,6 @@ import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
-import * as amplify from 'aws-cdk-lib/aws-amplify';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
@@ -372,56 +370,6 @@ export class USDAChatbotStack extends cdk.Stack {
       integration: adminIntegration,
     });
 
-    // ==================== Amplify Hosting ====================
-    // Note: You need to create a GitHub token secret in Secrets Manager first
-    // aws secretsmanager create-secret --name github-token --secret-string "your-github-token"
-    const githubToken = secretsmanager.Secret.fromSecretNameV2(this, 'GitHubToken', 'usda-token');
-
-    const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
-      name: 'AskUSDA-Frontend',
-      description: 'AskUSDA Chatbot Frontend',
-      repository: 'https://github.com/ASUCICREPO/AskUSDA', // Update with your repo
-      accessToken: githubToken.secretValue.unsafeUnwrap(),
-      platform: 'WEB_COMPUTE',
-      environmentVariables: [
-        { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
-        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
-      ],
-      buildSpec: cdk.Fn.sub(`
-version: 1
-applications:
-  - frontend:
-      phases:
-        preBuild:
-          commands:
-            - npm ci
-        build:
-          commands:
-            - npm run build
-      artifacts:
-        baseDirectory: .next
-        files:
-          - '**/*'
-      cache:
-        paths:
-          - node_modules/**/*
-          - .next/cache/**/*
-    appRoot: frontend
-`),
-    });
-
-    // Master branch
-    new amplify.CfnBranch(this, 'MasterBranch', {
-      appId: amplifyApp.attrAppId,
-      branchName: 'master',
-      enableAutoBuild: true,
-      stage: 'PRODUCTION',
-      environmentVariables: [
-        { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
-        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
-      ],
-    });
-
     // ==================== Stack Outputs ====================
     new cdk.CfnOutput(this, 'WebSocketUrl', {
       value: webSocketStage.url,
@@ -457,12 +405,6 @@ applications:
       value: guardrail.attrGuardrailId,
       description: 'Bedrock Guardrail ID',
       exportName: 'AskUSDA-GuardrailId',
-    });
-
-    new cdk.CfnOutput(this, 'AmplifyAppUrl', {
-      value: `https://master.${amplifyApp.attrDefaultDomain}`,
-      description: 'Amplify App URL',
-      exportName: 'AskUSDA-AmplifyUrl',
     });
 
     new cdk.CfnOutput(this, 'AdminApiUrl', {

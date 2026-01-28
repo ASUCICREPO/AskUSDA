@@ -1,8 +1,12 @@
 import type { NextConfig } from "next";
-import { withAmplifyHostingAdapter } from "@aws-amplify/adapter-nextjs";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  // Enable static export for AWS Amplify deployment
+  output: 'export',
+  trailingSlash: true,
+  images: {
+    unoptimized: true
+  }
 };
 
-export default withAmplifyHostingAdapter(nextConfig);
+export default nextConfig;
