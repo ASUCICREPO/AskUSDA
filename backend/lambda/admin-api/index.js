@@ -313,7 +313,12 @@ async function createFeedback(body) {
 exports.handler = async (event) => {
   console.log('Event:', JSON.stringify(event, null, 2));
 
-  const { httpMethod, path, pathParameters, queryStringParameters, body } = event;
+  // HTTP API v2 uses different event structure
+  const httpMethod = event.requestContext?.http?.method || event.httpMethod;
+  const path = event.rawPath || event.path;
+  const pathParameters = event.pathParameters;
+  const queryStringParameters = event.queryStringParameters;
+  const body = event.body;
 
   // Handle CORS preflight
   if (httpMethod === 'OPTIONS') {
@@ -348,7 +353,7 @@ exports.handler = async (event) => {
       return await createEscalation(JSON.parse(body || '{}'));
     }
 
-    if (path.startsWith('/escalations/') && httpMethod === 'DELETE') {
+    if (path && path.startsWith('/escalations/') && httpMethod === 'DELETE') {
       const escalationId = pathParameters?.id || path.split('/').pop();
       const result = await deleteEscalation(escalationId);
       return response(result.success ? 200 : 404, result);
