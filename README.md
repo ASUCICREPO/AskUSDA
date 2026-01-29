@@ -150,7 +150,7 @@ This application was developed by:
 **UI/UX Designer:**
 - <a href="https://www.linkedin.com/in/ashik-tharakan/" target="_blank">Ashik Mathew Tharakan</a>
 
-Built in collaboration with the ASU Cloud Innovation Center and USDA stakeholders.
+Built in collaboration with the ASU Cloud Innovation Center.
 
 ---
 
