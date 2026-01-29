@@ -8,6 +8,8 @@ import * as apigatewayv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authoriz
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
@@ -194,8 +196,84 @@ export class USDAChatbotStack extends cdk.Stack {
     // Ensure data source is created after knowledge base
     webCrawlerDataSource.addDependency(knowledgeBase);
 
-    // NOTE: Knowledge Base sync is done manually after deployment via AWS Console or CLI:
-    // aws bedrock-agent start-ingestion-job --knowledge-base-id <KB_ID> --data-source-id <DS_ID>
+    // ==================== Daily Knowledge Base Sync (EventBridge + Lambda) ====================
+    // Lambda function to trigger KB sync
+    const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+
+    // Grant permission to start ingestion job
+    kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:StartIngestionJob'],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
+    }));
+
+    const kbSyncHandler = new lambda.Function(this, 'KBSyncHandler', {
+      functionName: 'AskUSDA-KBSyncHandler',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/client-bedrock-agent');
+
+const client = new BedrockAgentClient({});
+
+exports.handler = async (event) => {
+  console.log('Starting Knowledge Base sync job...');
+  console.log('Event:', JSON.stringify(event, null, 2));
+  
+  const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
+  const dataSourceId = process.env.DATA_SOURCE_ID;
+  
+  try {
+    const response = await client.send(new StartIngestionJobCommand({
+      knowledgeBaseId,
+      dataSourceId,
+    }));
+    
+    console.log('Ingestion job started successfully:', JSON.stringify(response, null, 2));
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        message: 'Knowledge Base sync started',
+        ingestionJobId: response.ingestionJob?.ingestionJobId,
+      }),
+    };
+  } catch (error) {
+    console.error('Error starting ingestion job:', error);
+    throw error;
+  }
+};
+      `),
+      role: kbSyncLambdaRole,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 128,
+      environment: {
+        KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+        DATA_SOURCE_ID: webCrawlerDataSource.attrDataSourceId,
+      },
+    });
+
+    // EventBridge rule to trigger daily at 6:00 AM UTC (off-peak hours)
+    // This is ~11 PM PST / 2 AM EST - good for US government sites
+    const dailySyncRule = new events.Rule(this, 'DailyKBSyncRule', {
+      ruleName: 'AskUSDA-DailyKBSync',
+      description: 'Triggers daily Knowledge Base sync at 6:00 AM UTC',
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '6',
+        day: '*',
+        month: '*',
+        year: '*',
+      }),
+    });
+
+    dailySyncRule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
+      retryAttempts: 2,
+    }));
 
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
