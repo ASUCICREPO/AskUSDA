@@ -245,7 +245,15 @@ export class USDAChatbotStack extends cdk.Stack {
       functionName: 'AskUSDA-WebSocketHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/websocket-handler'),
+      code: lambda.Code.fromAsset('lambda/websocket-handler', {
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            'npm install && cp -au . /asset-output'
+          ],
+        },
+      }),
       role: lambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
@@ -377,7 +385,15 @@ export class USDAChatbotStack extends cdk.Stack {
       functionName: 'AskUSDA-AdminHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/admin-api'),
+      code: lambda.Code.fromAsset('lambda/admin-api', {
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            'npm install && cp -au . /asset-output'
+          ],
+        },
+      }),
       role: adminLambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
