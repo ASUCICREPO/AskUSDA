@@ -19,6 +19,9 @@ interface Message {
   isStreaming?: boolean;
   feedback?: "positive" | "negative" | null;
   conversationId?: string;
+  sessionId?: string;
+  responseTimeMs?: number;
+  question?: string; // The user's question that prompted this response
 }
 
 interface WebSocketMessage {
@@ -36,6 +39,7 @@ interface WebSocketMessage {
   isTyping?: boolean;
   success?: boolean;
   escalationId?: string;
+  question?: string; // The original question (echoed back from server)
 }
 
 const suggestedQuestions = [
@@ -164,6 +168,9 @@ export default function ChatBot() {
             timestamp: new Date(),
             citations: data.citations,
             conversationId: data.conversationId,
+            sessionId: data.sessionId,
+            responseTimeMs: data.responseTimeMs,
+            question: data.question, // Store the question for feedback submission
             isStreaming: false,
           };
           
@@ -296,7 +303,7 @@ export default function ChatBot() {
     }
   }, []);
 
-  // Send feedback to backend
+  // Send feedback to backend (this also saves the conversation - only conversations with feedback are stored)
   const handleFeedback = useCallback((messageId: string, feedback: "positive" | "negative") => {
     const message = messages.find(msg => msg.id === messageId);
     if (!message?.conversationId) {
@@ -311,17 +318,22 @@ export default function ChatBot() {
       )
     );
 
-    // Send to backend via WebSocket
+    // Send to backend via WebSocket - include all data needed to save the conversation
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
           action: "submitFeedback",
           feedback,
           conversationId: message.conversationId,
+          question: message.question,
+          answer: message.text,
+          sessionId: message.sessionId || sessionId,
+          responseTimeMs: message.responseTimeMs,
+          citations: message.citations,
         })
       );
     }
-  }, [messages]);
+  }, [messages, sessionId]);
 
   // Connect when chat opens
   useEffect(() => {

@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
 const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
@@ -127,62 +127,6 @@ async function queryKnowledgeBase(question, sessionId) {
   };
 }
 
-// Save conversation to DynamoDB
-async function saveConversation(conversationId, sessionId, question, answer, citations, responseTimeMs) {
-  const now = new Date();
-  const timestamp = now.toISOString();
-  const date = timestamp.split('T')[0];
-  const ttl = Math.floor(now.getTime() / 1000) + (90 * 24 * 60 * 60); // 90 days TTL
-
-  await docClient.send(new PutCommand({
-    TableName: CONVERSATION_TABLE,
-    Item: {
-      conversationId,
-      timestamp,
-      sessionId,
-      question,
-      answer,
-      answerPreview: answer.substring(0, 500),
-      citations: JSON.stringify(citations),
-      responseTimeMs,
-      date,
-      ttl,
-    },
-  }));
-}
-
-// Update feedback in DynamoDB
-async function updateFeedback(conversationId, feedback) {
-  // First, find the conversation by conversationId
-  const queryResult = await docClient.send(new QueryCommand({
-    TableName: CONVERSATION_TABLE,
-    KeyConditionExpression: 'conversationId = :cid',
-    ExpressionAttributeValues: {
-      ':cid': conversationId,
-    },
-    Limit: 1,
-  }));
-
-  if (!queryResult.Items || queryResult.Items.length === 0) {
-    throw new Error('Conversation not found');
-  }
-
-  const item = queryResult.Items[0];
-  
-  await docClient.send(new UpdateCommand({
-    TableName: CONVERSATION_TABLE,
-    Key: {
-      conversationId: item.conversationId,
-      timestamp: item.timestamp,
-    },
-    UpdateExpression: 'SET feedback = :feedback, feedbackTs = :feedbackTs',
-    ExpressionAttributeValues: {
-      ':feedback': feedback === 'positive' ? 'pos' : 'neg',
-      ':feedbackTs': new Date().toISOString(),
-    },
-  }));
-}
-
 // Save escalation request
 async function saveEscalation(name, email, phone, question, sessionId) {
   const escalationId = uuidv4();
@@ -241,20 +185,10 @@ async function handleSendMessage(connectionId, body) {
     // Query Knowledge Base
     const result = await queryKnowledgeBase(message, sessionId);
     
-    // Generate conversation ID
+    // Generate conversation ID (but don't save yet - only save when feedback is given)
     const conversationId = uuidv4();
 
-    // Save to DynamoDB
-    await saveConversation(
-      conversationId,
-      result.sessionId,
-      message,
-      result.answer,
-      result.citations,
-      result.responseTimeMs
-    );
-
-    // Send response to client
+    // Send response to client (include question/answer data for potential feedback submission)
     await sendToClient(connectionId, {
       type: 'message',
       message: result.answer,
@@ -262,6 +196,8 @@ async function handleSendMessage(connectionId, body) {
       conversationId,
       sessionId: result.sessionId,
       responseTimeMs: result.responseTimeMs,
+      // Include data needed for saving conversation when feedback is submitted
+      question: message,
     });
 
   } catch (error) {
@@ -273,9 +209,9 @@ async function handleSendMessage(connectionId, body) {
   }
 }
 
-// Handle submitFeedback action
+// Handle submitFeedback action - saves conversation only when feedback is given
 async function handleSubmitFeedback(connectionId, body) {
-  const { conversationId, feedback } = body;
+  const { conversationId, feedback, question, answer, sessionId, responseTimeMs, citations } = body;
 
   if (!conversationId || !feedback) {
     await sendToClient(connectionId, {
@@ -286,7 +222,29 @@ async function handleSubmitFeedback(connectionId, body) {
   }
 
   try {
-    await updateFeedback(conversationId, feedback);
+    // Save the conversation with feedback (only conversations with feedback are stored)
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const date = timestamp.split('T')[0];
+    const ttl = Math.floor(now.getTime() / 1000) + (90 * 24 * 60 * 60); // 90 days TTL
+
+    await docClient.send(new PutCommand({
+      TableName: CONVERSATION_TABLE,
+      Item: {
+        conversationId,
+        timestamp,
+        sessionId: sessionId || '',
+        question: question || '',
+        answer: answer || '',
+        answerPreview: (answer || '').substring(0, 500),
+        citations: JSON.stringify(citations || []),
+        responseTimeMs: responseTimeMs || 0,
+        date,
+        feedback: feedback === 'positive' ? 'pos' : 'neg',
+        feedbackTs: timestamp,
+        ttl,
+      },
+    }));
     
     await sendToClient(connectionId, {
       type: 'feedbackConfirmation',

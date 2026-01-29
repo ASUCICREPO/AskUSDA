@@ -124,13 +124,13 @@ async function getMetrics(days = 7) {
   };
 }
 
-// Get feedback conversations
+// Get feedback conversations (only returns conversations with feedback - pos or neg)
 async function getFeedbackConversations(limit = 50, feedbackFilter = null) {
   const conversations = [];
   
   try {
     if (feedbackFilter && (feedbackFilter === 'pos' || feedbackFilter === 'neg')) {
-      // Query by feedback index
+      // Query by specific feedback type
       const result = await docClient.send(new QueryCommand({
         TableName: CONVERSATION_TABLE,
         IndexName: FEEDBACK_INDEX,
@@ -141,16 +141,30 @@ async function getFeedbackConversations(limit = 50, feedbackFilter = null) {
       }));
       conversations.push(...(result.Items || []));
     } else {
-      // Scan all conversations
-      const result = await docClient.send(new ScanCommand({
-        TableName: CONVERSATION_TABLE,
-        Limit: limit,
-      }));
+      // Get both positive and negative feedback (exclude conversations with no feedback)
+      const [posResult, negResult] = await Promise.all([
+        docClient.send(new QueryCommand({
+          TableName: CONVERSATION_TABLE,
+          IndexName: FEEDBACK_INDEX,
+          KeyConditionExpression: 'feedback = :feedback',
+          ExpressionAttributeValues: { ':feedback': 'pos' },
+          ScanIndexForward: false,
+          Limit: limit,
+        })),
+        docClient.send(new QueryCommand({
+          TableName: CONVERSATION_TABLE,
+          IndexName: FEEDBACK_INDEX,
+          KeyConditionExpression: 'feedback = :feedback',
+          ExpressionAttributeValues: { ':feedback': 'neg' },
+          ScanIndexForward: false,
+          Limit: limit,
+        })),
+      ]);
       
-      // Sort by timestamp descending
-      const items = result.Items || [];
-      items.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      conversations.push(...items);
+      // Combine and sort by timestamp descending
+      const allItems = [...(posResult.Items || []), ...(negResult.Items || [])];
+      allItems.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      conversations.push(...allItems.slice(0, limit));
     }
   } catch (error) {
     console.error('Error getting feedback conversations:', error);

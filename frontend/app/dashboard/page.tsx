@@ -214,8 +214,7 @@ export default function AdminPage() {
   const filteredFeedback = feedbackConversations.filter((conv) => {
     const matchesFeedback = feedbackFilter === "all" || 
                            (feedbackFilter === "positive" && conv.feedback === "pos") ||
-                           (feedbackFilter === "negative" && conv.feedback === "neg") ||
-                           (feedbackFilter === "none" && !conv.feedback);
+                           (feedbackFilter === "negative" && conv.feedback === "neg");
     return matchesFeedback;
   });
 
@@ -560,7 +559,6 @@ export default function AdminPage() {
                 <option value="all">All Feedback</option>
                 <option value="positive">Positive</option>
                 <option value="negative">Negative</option>
-                <option value="none">No Feedback</option>
               </select>
             </div>
           </div>
