@@ -1,6 +1,6 @@
 # AskUSDA - USDA Chatbot
 
-AskUSDA is an intelligent AI-powered chatbot that helps  the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It uses AWS Bedrock Knowledge Bases, a serverless backend, and a modern Next.js frontend with a hover-over chatbot experience.
+AskUSDA is an intelligent AI-powered chatbot that helps the public, farmers, and ranchers quickly find accurate information from USDA programs and services. It uses AWS Bedrock Knowledge Bases, a serverless backend, and a modern Next.js frontend with a hover-over chatbot experience.
 
 ---
 
@@ -90,9 +90,11 @@ For developers looking to extend or modify this project, see the [Modification G
 ├── backend/
 │   ├── bin/
 │   │   └── backend.ts
-│   ├── lambda-bundle/
-│   │   ├── index.js               # WebSocket chatbot Lambda bundle
-│   │   └── admin.js               # Admin API Lambda bundle
+│   ├── lambda/
+│   │   ├── websocket-handler/
+│   │   │   └── index.js           # WebSocket chat, feedback, escalation Lambda
+│   │   └── admin-api/
+│   │       └── index.js           # Admin HTTP API Lambda (metrics, feedback, escalations)
 │   ├── lib/
 │   │   └── backend-stack.ts
 │   ├── cdk.json
@@ -126,7 +128,7 @@ For developers looking to extend or modify this project, see the [Modification G
 
 1. **backend/** - Contains all backend infrastructure and serverless functions
    - `bin/` - CDK app entry point
-   - `lambda-bundle/` - Bundled AWS Lambda handlers for WebSocket chat and admin APIs
+   - `lambda/` - Lambda source: `websocket-handler` (chat, feedback, escalation) and `admin-api` (metrics, feedback, escalations)
    - `lib/` - CDK stack definitions
 
 2. **frontend/** - Next.js frontend application

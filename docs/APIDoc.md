@@ -1,286 +1,312 @@
-# [INSERT_PROJECT_NAME] APIs
+# AskUSDA APIs
 
-This document provides comprehensive API documentation for [INSERT_PROJECT_NAME].
+This document provides API documentation for the AskUSDA Chatbot: **WebSocket API** (chat, feedback, escalation) and **HTTP Admin API** (metrics, feedback, escalations).
 
 ---
 
 ## Overview
 
-[INSERT_API_OVERVIEW - Brief description of what the APIs do and their purpose]
+- **WebSocket API** (`AskUSDA-WebSocket`): Chat with the USDA knowledge base, submit thumbs up/down feedback, and submit escalation requests. Used by the hover-over chatbot on the main page.
+- **HTTP Admin API** (`AskUSDA-AdminAPI`): Dashboard metrics, conversation feedback list, and escalation CRUD. Used by the `/admin` dashboard. GET and DELETE routes are protected by Cognito JWT; POST /feedback and POST /escalations are public.
 
 ---
 
-## Base URL
+## Base URLs
 
+**WebSocket API (chat, feedback, escalation):**
 ```
-https://[INSERT_API_ID].execute-api.[INSERT_REGION].amazonaws.com/[INSERT_STAGE]/
+wss://[API_ID].execute-api.[REGION].amazonaws.com/prod
 ```
 
-> **[PLACEHOLDER]** Replace with your actual API Gateway endpoint after deployment
+**HTTP Admin API:**
+```
+https://[API_ID].execute-api.[REGION].amazonaws.com
+```
 
-**Example:**
-```
-https://xxxxxxxxxx.execute-api.us-east-1.amazonaws.com/prod/
-```
+> Replace with your actual API Gateway endpoints (from CDK outputs: `AskUSDA-WebSocketUrl`, `AskUSDA-AdminApiUrl`).
 
 ---
 
 ## Authentication
 
-[INSERT_AUTHENTICATION_METHOD - Describe how API requests should be authenticated]
+### WebSocket API
+- No authentication. Clients connect and send messages; each connection is identified by `connectionId` (from API Gateway).
 
-### Headers Required
+### HTTP Admin API
+- **Protected (Cognito JWT required):** `GET /metrics`, `GET /feedback`, `DELETE /escalations/{id}`. Send `Authorization: <Cognito IdToken>`.
+- **Public (no auth):** `POST /feedback`, `POST /escalations` (used by the chatbot and escalation form).
+
+### Headers (HTTP Admin API)
 | Header | Description | Required |
 |--------|-------------|----------|
-| `[INSERT_HEADER_1]` | [INSERT_DESCRIPTION] | Yes/No |
-| `[INSERT_HEADER_2]` | [INSERT_DESCRIPTION] | Yes/No |
-| `Content-Type` | `application/json` | Yes |
+| `Content-Type` | `application/json` | Yes (for POST) |
+| `Authorization` | Cognito JWT (Id token) | Protected routes only |
 
 ---
 
-## 1) [INSERT_API_GROUP_1_NAME - e.g., "Chat Endpoints"]
+## 1) WebSocket API
 
-[INSERT_GROUP_DESCRIPTION - Brief description of this group of endpoints]
+Connect to the WebSocket URL, then send JSON messages. The route is determined by the **route key** (API Gateway) or by an **action** field in the body for `$default`.
 
----
+### Routes
 
-#### POST /[INSERT_ENDPOINT_1] — [INSERT_BRIEF_DESCRIPTION]
-
-- **Purpose**: [INSERT_DETAILED_PURPOSE]
-
-- **Request body**:
-```json
-{
-  "[INSERT_FIELD_1]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]",
-  "[INSERT_FIELD_2]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]",
-  "[INSERT_FIELD_3]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]"
-}
-```
-
-- **Example request**:
-```json
-{
-  "[INSERT_FIELD_1]": "[INSERT_EXAMPLE_VALUE]",
-  "[INSERT_FIELD_2]": "[INSERT_EXAMPLE_VALUE]"
-}
-```
-
-- **Response**:
-```json
-{
-  "[INSERT_RESPONSE_FIELD_1]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]",
-  "[INSERT_RESPONSE_FIELD_2]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]"
-}
-```
-
-- **Example response**:
-```json
-{
-  "[INSERT_RESPONSE_FIELD_1]": "[INSERT_EXAMPLE_VALUE]",
-  "[INSERT_RESPONSE_FIELD_2]": "[INSERT_EXAMPLE_VALUE]"
-}
-```
-
-- **Status codes**:
-  - `200 OK` - [INSERT_SUCCESS_DESCRIPTION]
-  - `400 Bad Request` - [INSERT_ERROR_DESCRIPTION]
-  - `500 Internal Server Error` - [INSERT_ERROR_DESCRIPTION]
+| Route Key | Description |
+|-----------|-------------|
+| `$connect` | Client connects (no body) |
+| `$disconnect` | Client disconnects |
+| `sendMessage` | Send a chat message and receive answer + citations |
+| `submitFeedback` | Submit thumbs up/down for a conversation (saves conversation to DB) |
+| `submitEscalation` | Submit an escalation request (name, email, phone, question) |
 
 ---
 
-#### GET /[INSERT_ENDPOINT_2] — [INSERT_BRIEF_DESCRIPTION]
+#### sendMessage
 
-- **Purpose**: [INSERT_DETAILED_PURPOSE]
+- **Purpose:** Send a user question to the USDA knowledge base and receive an answer with citations (single response, not chunked streaming).
 
-- **Query parameters**:
+- **Request (body):**
+```json
+{
+  "message": "string (required) - The user's question",
+  "sessionId": "string (optional) - Bedrock session ID for conversation continuity"
+}
+```
+
+- **Response (sent to client over WebSocket):**
+  - `type: "typing"`, `isTyping: true` — typing indicator
+  - `type: "message"` — final message with:
+    - `message` — answer text
+    - `citations` — array of `{ id, text, source, score }`
+    - `conversationId` — UUID for this Q&A (use when submitting feedback)
+    - `sessionId` — Bedrock session ID (optional, for follow-up)
+    - `responseTimeMs` — response time
+    - `question` — echoed user question
+  - `type: "error"` — `message` with error description (e.g. guardrail blocked, server error)
+
+- **Guardrail:** Input is checked; if blocked, client receives `type: "message"` with `blocked: true` and a safe message.
+
+---
+
+#### submitFeedback
+
+- **Purpose:** Record positive or negative feedback for a specific Q&A. This also **saves the conversation** to DynamoDB (Conversation History) so it appears in the admin feedback list.
+
+- **Request (body):**
+```json
+{
+  "conversationId": "string (required) - UUID from sendMessage response",
+  "feedback": "string (required) - 'positive' | 'negative'",
+  "question": "string (optional) - User question (for storage)",
+  "answer": "string (optional) - Bot answer (for storage)",
+  "sessionId": "string (optional)",
+  "responseTimeMs": "number (optional)",
+  "citations": "array (optional)"
+}
+```
+
+- **Response:** `type: "feedbackConfirmation"` with `success: true`, `conversationId`, `feedback`. On error, `type: "error"` with `message`.
+
+---
+
+#### submitEscalation
+
+- **Purpose:** Submit an escalation/support request (name, email, phone, question). Stored in Escalation Requests table and visible in the admin dashboard.
+
+- **Request (body):**
+```json
+{
+  "name": "string (required)",
+  "email": "string (required)",
+  "phone": "string (optional)",
+  "question": "string (required)",
+  "sessionId": "string (optional)"
+}
+```
+
+- **Response:** `type: "escalationConfirmation"` with `success: true`, `escalationId`, `message`. On error, `type: "error"` with `message`.
+
+---
+
+## 2) HTTP Admin API
+
+All responses are JSON. CORS is enabled.
+
+---
+
+#### GET /metrics — Dashboard statistics
+
+- **Purpose:** Aggregated metrics for the admin dashboard (conversations by day, feedback counts, response time). **Cognito protected.**
+
+- **Query parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `[INSERT_PARAM_1]` | [INSERT_TYPE] | Yes/No | [INSERT_DESCRIPTION] |
-| `[INSERT_PARAM_2]` | [INSERT_TYPE] | Yes/No | [INSERT_DESCRIPTION] |
+| `days` | number | No | Number of days to include (default: 7) |
 
-- **Example request**:
-```
-GET /[INSERT_ENDPOINT]?[INSERT_PARAM_1]=[INSERT_VALUE]&[INSERT_PARAM_2]=[INSERT_VALUE]
-```
+- **Example:** `GET /metrics?days=7`
 
-- **Response**:
+- **Response:**
 ```json
 {
-  "[INSERT_RESPONSE_FIELD]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]"
-}
-```
-
----
-
-## 2) [INSERT_API_GROUP_2_NAME - e.g., "Document Endpoints"]
-
-[INSERT_GROUP_DESCRIPTION]
-
----
-
-#### POST /[INSERT_ENDPOINT_3] — [INSERT_BRIEF_DESCRIPTION]
-
-- **Purpose**: [INSERT_DETAILED_PURPOSE]
-
-- **Request body**:
-```json
-{
-  "[INSERT_FIELD]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]"
-}
-```
-
-- **Response**:
-```json
-{
-  "[INSERT_RESPONSE_FIELD]": "[INSERT_TYPE] - [INSERT_DESCRIPTION]"
-}
-```
-
----
-
-#### DELETE /[INSERT_ENDPOINT_4] — [INSERT_BRIEF_DESCRIPTION]
-
-- **Purpose**: [INSERT_DETAILED_PURPOSE]
-
-- **Path parameters**:
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `[INSERT_PARAM]` | [INSERT_TYPE] | [INSERT_DESCRIPTION] |
-
-- **Response**:
-```json
-{
-  "message": "string - Success/error message"
-}
-```
-
----
-
-## 3) [INSERT_API_GROUP_3_NAME - e.g., "Admin Endpoints"]
-
-[INSERT_GROUP_DESCRIPTION]
-
----
-
-#### [INSERT_HTTP_METHOD] /[INSERT_ENDPOINT] — [INSERT_BRIEF_DESCRIPTION]
-
-- **Purpose**: [INSERT_DETAILED_PURPOSE]
-
-- **Request/Response**: [INSERT_DETAILS]
-
----
-
-## Response Format
-
-All API responses follow this general structure:
-
-### Success Response
-```json
-{
-  "statusCode": 200,
-  "body": {
-    "[INSERT_DATA_FIELD]": "[INSERT_DATA]"
-  }
-}
-```
-
-### Error Response
-```json
-{
-  "statusCode": "[INSERT_ERROR_CODE]",
-  "error": {
-    "message": "[INSERT_ERROR_MESSAGE]",
-    "code": "[INSERT_ERROR_CODE_STRING]"
-  }
-}
-```
-
----
-
-## Error Codes
-
-| Code | Name | Description |
-|------|------|-------------|
-| `400` | Bad Request | [INSERT_DESCRIPTION] |
-| `401` | Unauthorized | [INSERT_DESCRIPTION] |
-| `403` | Forbidden | [INSERT_DESCRIPTION] |
-| `404` | Not Found | [INSERT_DESCRIPTION] |
-| `429` | Too Many Requests | [INSERT_DESCRIPTION] |
-| `500` | Internal Server Error | [INSERT_DESCRIPTION] |
-
----
-
-## Rate Limiting
-
-[INSERT_RATE_LIMITING_DETAILS - Describe any rate limits on the API]
-
-- **Requests per second**: [INSERT_LIMIT]
-- **Requests per day**: [INSERT_LIMIT]
-- **Burst limit**: [INSERT_LIMIT]
-
----
-
-## SDK / Client Examples
-
-### JavaScript/TypeScript
-```typescript
-// [INSERT_EXAMPLE_CODE]
-const response = await fetch('[INSERT_API_URL]/[INSERT_ENDPOINT]', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    '[INSERT_AUTH_HEADER]': '[INSERT_AUTH_VALUE]'
-  },
-  body: JSON.stringify({
-    [INSERT_REQUEST_BODY]
-  })
-});
-
-const data = await response.json();
-```
-
-### Python
-```python
-# [INSERT_EXAMPLE_CODE]
-import requests
-
-response = requests.post(
-    '[INSERT_API_URL]/[INSERT_ENDPOINT]',
-    headers={
-        'Content-Type': 'application/json',
-        '[INSERT_AUTH_HEADER]': '[INSERT_AUTH_VALUE]'
-    },
-    json={
-        '[INSERT_FIELD]': '[INSERT_VALUE]'
+  "totalConversations": 150,
+  "conversationsToday": 23,
+  "totalFeedback": 45,
+  "positiveFeedback": 38,
+  "negativeFeedback": 7,
+  "noFeedback": 105,
+  "satisfactionRate": 84,
+  "avgResponseTimeMs": 2340,
+  "conversationsByDay": [
+    {
+      "date": "2025-01-05",
+      "count": 20,
+      "dayName": "Tue",
+      "label": "Jan 5"
     }
-)
-
-data = response.json()
-```
-
-### cURL
-```bash
-curl -X POST '[INSERT_API_URL]/[INSERT_ENDPOINT]' \
-  -H 'Content-Type: application/json' \
-  -H '[INSERT_AUTH_HEADER]: [INSERT_AUTH_VALUE]' \
-  -d '{
-    "[INSERT_FIELD]": "[INSERT_VALUE]"
-  }'
+  ]
+}
 ```
 
 ---
 
-## Changelog
+#### GET /feedback — Conversation feedback list
 
-| Version | Date | Changes |
-|---------|------|---------|
-| [INSERT_VERSION] | [INSERT_DATE] | [INSERT_CHANGES] |
+- **Purpose:** List conversations that have feedback (for admin table). **Cognito protected.**
+
+- **Query parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Max items (default: 50) |
+| `filter` | string | No | `pos` or `neg` to filter by feedback type |
+
+- **Example:** `GET /feedback?limit=50&filter=neg`
+
+- **Response:**
+```json
+{
+  "conversations": [
+    {
+      "conversationId": "uuid",
+      "sessionId": "string",
+      "question": "User question...",
+      "answerPreview": "First 500 chars of answer...",
+      "feedback": "pos",
+      "timestamp": "2025-01-05T10:30:00.000Z",
+      "date": "2025-01-05",
+      "responseTimeMs": 2340
+    }
+  ]
+}
+```
 
 ---
 
-## Support
+#### POST /feedback — Submit or update feedback (public)
 
-For API-related issues or questions:
-- [INSERT_SUPPORT_CHANNEL]
-- [INSERT_DOCUMENTATION_LINK]
+- **Purpose:** Record feedback for a conversation by `conversationId`. Used when the conversation already exists in DynamoDB (e.g. after WebSocket submitFeedback). **Public (no auth).**
 
+- **Request body:**
+```json
+{
+  "conversationId": "string (required) - UUID of the conversation",
+  "feedback": "string (required) - 'positive' | 'negative' (or 'pos' | 'neg')"
+}
+```
+
+- **Response:** `200` with `{ "success": true }`. `400` if missing params; `404` if conversation not found; `500` on server error.
+
+---
+
+#### GET /escalations — List escalation requests
+
+- **Purpose:** List all escalation requests for the admin dashboard. **Cognito protected.**
+
+- **Response:**
+```json
+{
+  "escalations": [
+    {
+      "id": "escalationId-uuid",
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "+1234567890",
+      "question": "Need help with...",
+      "requestDate": "2025-01-05T10:30:00.000Z",
+      "status": "pending"
+    }
+  ]
+}
+```
+
+---
+
+#### POST /escalations — Create escalation (public)
+
+- **Purpose:** Create a new escalation request (e.g. from chatbot or contact form). **Public (no auth).**
+
+- **Request body:**
+```json
+{
+  "name": "string (required)",
+  "email": "string (required)",
+  "phone": "string (optional)",
+  "question": "string (required)",
+  "sessionId": "string (optional)"
+}
+```
+
+- **Response:** `200` with `{ "success": true, "escalationId": "uuid" }`. `400` if name, email, or question missing; `500` on server error.
+
+---
+
+#### DELETE /escalations/{id} — Delete escalation
+
+- **Purpose:** Delete an escalation request by its `escalationId`. **Cognito protected.**
+
+- **Path parameters:** `id` — the escalation ID (UUID).
+
+- **Response:** `200` with `{ "success": true }`. `404` if not found; `500` on server error.
+
+---
+
+## Response format (HTTP Admin API)
+
+- Success: `statusCode: 200` (or `201` where applicable), `body` is JSON (object or array as above).
+- Error: `statusCode: 400 | 404 | 500`, `body` includes `error` message.
+
+---
+
+## Error codes (HTTP)
+
+| Code | Description |
+|------|-------------|
+| 400 | Bad request (missing or invalid parameters) |
+| 401 | Unauthorized (missing or invalid Cognito token on protected routes) |
+| 404 | Not found (conversation or escalation) |
+| 500 | Internal server error |
+
+---
+
+## DynamoDB table schemas
+
+### Conversation History (`AskUSDA-ConversationHistory`)
+
+- **Keys:** `conversationId` (PK), `timestamp` (SK)
+- **GSIs:** `sessionId-timestamp-index`, `date-timestamp-index`, `feedback-timestamp-index`
+- **Attributes:** `sessionId`, `question`, `answer`, `answerPreview`, `citations` (JSON string), `responseTimeMs`, `date`, `feedback` (`pos`/`neg`), `feedbackTs`, `ttl`
+
+Conversations are written when the user submits feedback (WebSocket submitFeedback or POST /feedback for an existing record).
+
+### Escalation Requests (`AskUSDA-EscalationRequests`)
+
+- **Keys:** `escalationId` (PK), `timestamp` (SK)
+- **GSI:** `DateTimestampIndex` on `date` + `timestamp`
+- **Attributes:** `date`, `name`, `email`, `phone`, `question`, `sessionId`, `status`, `ttl`
+
+---
+
+## Related documentation
+
+- [Deployment Guide](./deploymentGuide.md) — How to deploy the application
+- [Architecture Deep Dive](./architectureDeepDive.md) — System design and data flows
+- [User Guide](./userGuide.md) — How to use the chatbot and admin dashboard
+- [Modification Guide](./modificationGuide.md) — How to customize the application

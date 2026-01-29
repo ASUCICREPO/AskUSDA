@@ -36,30 +36,29 @@ Users access the chatbot through a web interface hosted on **AWS Amplify**:
 **Amazon API Gateway** provides two entry points:
 
 - **WebSocket API** (`AskUSDA-WebSocket`):
-  - Routes: `$connect`, `$disconnect`, `sendMessage`, `submitFeedback`
-  - All chat and feedback traffic uses the WebSocket connection
+  - Routes: `$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`
+  - All chat, feedback, and escalation traffic from the chatbot uses the WebSocket connection
   - Single Lambda (**WebSocket Handler**) handles every route
 
 - **HTTP API** (`AskUSDA-AdminAPI`):
-  - `GET /metrics` – Dashboard statistics (conversations, upvotes, downvotes, escalations)
-  - `GET /feedback`, `POST /feedback` – Conversation feedback list and submit
-  - `GET /escalations`, `POST /escalations`, `DELETE /escalations/{id}` – Escalation CRUD
-  - CORS enabled for frontend; no auth in current implementation
+  - `GET /metrics` – Dashboard statistics (conversations, feedback, escalations) — **Cognito protected**
+  - `GET /feedback`, `POST /feedback` – Conversation feedback list (protected) and submit (public)
+  - `GET /escalations`, `POST /escalations`, `DELETE /escalations/{id}` – Escalation list/delete (protected), create (public)
+  - CORS enabled; GET and DELETE routes use Cognito JWT authorizer
 
-### 3. WebSocket Handler Lambda (Chat + Feedback)
+### 3. WebSocket Handler Lambda (Chat + Feedback + Escalation)
 
-The **AskUSDA-WebSocketHandler** Lambda (`index.js`) implements the core chat flow:
+The **AskUSDA-WebSocketHandler** Lambda (`lambda/websocket-handler/index.js`) implements the core chat flow:
 
-- **Connect / Disconnect**: Persists `connectionId` in DynamoDB; no auth
+- **Connect / Disconnect**: Logs connection; no persistence of connectionId in DynamoDB
 - **sendMessage**:  
-  - Validates and optionally filters input via **Bedrock Guardrail**  
-  - Saves user message to **Conversation Logs**  
+  - Validates and filters input via **Bedrock Guardrail**  
   - Sends typing indicator  
-  - Calls **Bedrock Knowledge Base** (Retrieve) for RAG context  
-  - Builds conversation history from DynamoDB, then **ConverseStream** (Nova Pro) for streaming reply  
-  - Streams chunks to the client over WebSocket  
-  - Saves assistant message and citations to **Conversation Logs**
-- **submitFeedback**: Writes feedback (positive / negative / neutral) to **Conversation Logs** keyed by `connectionId`
+  - Calls **Bedrock Knowledge Base** (**RetrieveAndGenerate**) for RAG and streaming reply (Nova Pro)  
+  - Streams full response and citations to the client over WebSocket (no per-chunk streaming; single message)  
+  - Returns `conversationId` and session data; conversation is **not** saved until feedback is submitted
+- **submitFeedback**: Saves the conversation (question, answer, citations, feedback) to **Conversation History** keyed by `conversationId` and `timestamp`; feedback values are `pos` or `neg`
+- **submitEscalation**: Writes escalation request (name, email, phone, question) to **Escalation Requests** table
 
 ### 4. Bedrock Knowledge Base
 
@@ -87,39 +86,39 @@ The Knowledge Base is populated via a **web crawler** data source:
 - **Seed URLs**: `https://www.usda.gov/`, `https://www.farmers.gov/`
 - **Scope**: `HOST_ONLY`; configurable rate limit
 - Content is parsed, embedded with Titan, and stored in OpenSearch Serverless
-- Sync is triggered manually or via Bedrock Data Source ingest (no EventBridge daily trigger in current CDK)
+- Sync can be triggered manually or via EventBridge (daily at 6:00 AM UTC in current CDK via AskUSDA-DailyKBSync rule)
 
 ### 7. Admin Flow
 
 Admins use the **`/admin`** dashboard:
 
-1. Frontend calls **Admin HTTP API** (`GET /metrics`, `GET /feedback`, `GET /escalations`, etc.)
-2. **AskUSDA-AdminHandler** Lambda (`admin.js`) implements each route
-3. **Metrics**: Aggregated from **Conversation Logs** (sessions, messages, feedback counts) and **Escalation Requests** (count)
-4. **Feedback**: Reads **Conversation Logs** for items with `role: 'feedback'` and related `user` / `assistant` messages; returns list and full conversation for “View”
-5. **Escalations**: CRUD against **Escalation Requests** table (create from form, list, delete by id)
+1. Frontend calls **Admin HTTP API** with Cognito JWT: `GET /metrics`, `GET /feedback`, `GET /escalations`; and **DELETE** `/escalations/{id}`. Public (no auth): `POST /feedback`, `POST /escalations`.
+2. **AskUSDA-AdminHandler** Lambda (`lambda/admin-api/index.js`) implements each route.
+3. **Metrics**: Aggregated from **Conversation History** (by date index and scan for feedback/responseTimeMs) and **Escalation Requests** (count).
+4. **Feedback**: Queries **Conversation History** via `feedback-timestamp-index` (conversations with feedback); returns list with conversationId, question, answerPreview, feedback, timestamp, etc.
+5. **Escalations**: List (GET), create (POST from chatbot or form), delete (DELETE by escalationId). Table keyed by `escalationId` and `timestamp`.
 
-*Note: The architecture diagram references Cognito for admin auth; the current implementation does not yet use Cognito.*
+*Cognito is integrated: GET and DELETE admin routes use a JWT authorizer; POST /feedback and POST /escalations are public for the chatbot and escalation form.*
 
 ### 8. Data Storage (DynamoDB)
 
 Two DynamoDB tables store application data:
 
-#### Conversation Logs (`AskUSDA-ConversationLogs`)
+#### Conversation History (`AskUSDA-ConversationHistory`)
 
-- **Keys**: `connectionId` (PK), `timestamp` (SK)
-- **GSI**: `SessionIndex` on `sessionId` + `timestamp`
-- **TTL**: `ttl` for automatic expiry
-- Stores: `system` (connection), `user` / `assistant` messages (content, optional citations), `feedback` records
-- Used for chat history, RAG context, metrics, and feedback views in admin
+- **Keys**: `conversationId` (PK), `timestamp` (SK)
+- **GSIs**: `sessionId-timestamp-index`, `date-timestamp-index`, `feedback-timestamp-index`
+- **TTL**: `ttl` for automatic expiry (e.g. 90 days)
+- Stores: one record per Q&A when feedback is submitted — `conversationId`, `sessionId`, `question`, `answer`, `answerPreview`, `citations`, `responseTimeMs`, `date`, `feedback` (`pos`/`neg`), `feedbackTs`
+- Used for metrics, feedback list, and admin dashboard views
 
 #### Escalation Requests (`AskUSDA-EscalationRequests`)
 
-- **Keys**: `id` (PK), `requestDate` (SK)
-- **GSI**: `DateIndex` on `requestDate` + `timestamp`
-- **TTL**: `ttl` for optional expiry
-- Stores: name, email, phone, question, and related metadata for escalation requests
-- Used only by Admin API and `/admin` dashboard
+- **Keys**: `escalationId` (PK), `timestamp` (SK)
+- **GSI**: `DateTimestampIndex` on `date` + `timestamp`
+- **TTL**: `ttl` for optional expiry (e.g. 1 year)
+- Stores: `name`, `email`, `phone`, `question`, `sessionId`, `status`, `date`
+- Used by WebSocket (submitEscalation) and Admin API (list, delete)
 
 ---
 
@@ -148,8 +147,8 @@ Two DynamoDB tables store application data:
   - **HTTP API** for admin (CORS, no authorizer in current setup)
 
 - **AWS Lambda** (Node.js 20.x):
-  - **AskUSDA-WebSocketHandler** (`lambda-bundle/index.js`): WebSocket routes, KB, streaming, guardrails, DynamoDB
-  - **AskUSDA-AdminHandler** (`lambda-bundle/admin.js`): REST handlers for metrics, feedback, escalations
+  - **AskUSDA-WebSocketHandler** (`lambda/websocket-handler/index.js`): WebSocket routes (sendMessage, submitFeedback, submitEscalation), Knowledge Base RetrieveAndGenerate, guardrails, DynamoDB
+  - **AskUSDA-AdminHandler** (`lambda/admin-api/index.js`): HTTP handlers for metrics, feedback, escalations
 
 ### AI/ML Services
 
@@ -164,14 +163,14 @@ Two DynamoDB tables store application data:
 ### Data Storage
 
 - **Amazon DynamoDB**:
-  - **Conversation Logs**: Chat history, feedback, session data
+  - **Conversation History**: Chat feedback records, metrics, session data
   - **Escalation Requests**: Admin-managed escalation records
   - Pay-per-request billing; TTL where used
 
 ### Security & Authentication
 
 - **IAM**: Least-privilege roles for Lambdas (DynamoDB, Bedrock, Knowledge Base, OpenSearch, Execute API)
-- **Cognito**: Not yet integrated; admin endpoints are unauthenticated.
+- **Cognito**: Admin User Pool (`AskUSDA-AdminPool`) with JWT authorizer on GET /metrics, GET /feedback, GET /escalations, DELETE /escalations/{id}. POST /feedback and POST /escalations are public.
 - **Secrets Manager**: Used for Amplify GitHub token (`usda-token`), not for app runtime secrets.
 
 ---
@@ -188,10 +187,13 @@ backend/
 │   └── backend.ts              # CDK app entry point
 ├── lib/
 │   └── backend-stack.ts        # Main stack definition
-├── lambda-bundle/
-│   ├── index.js                # WebSocket handler (chat, feedback)
-│   ├── admin.js                # Admin HTTP API handler
-│   └── package.json            # Lambda dependencies
+├── lambda/
+│   ├── websocket-handler/
+│   │   ├── index.js            # WebSocket handler (chat, feedback, escalation)
+│   │   └── package.json
+│   └── admin-api/
+│       ├── index.js            # Admin HTTP API handler
+│       └── package.json
 ├── cdk.json
 ├── package.json
 └── tsconfig.json
@@ -218,13 +220,13 @@ backend/
    - Content filters for input/output
 
 7. **WebSocketApi** / **WebSocketStage** (`aws-cdk-lib/aws-apigatewayv2`)
-   - WebSocket API with connect, disconnect, sendMessage, submitFeedback routes
+   - WebSocket API with connect, disconnect, sendMessage, submitFeedback, submitEscalation routes
 
 8. **HttpApi** (`aws-cdk-lib/aws-apigatewayv2`)
-   - Admin HTTP API with /metrics, /feedback, /escalations routes
+   - Admin HTTP API with /metrics, /feedback, /escalations, /escalations/{id}; JWT authorizer on GET/DELETE
 
 9. **Function** (`aws-cdk-lib/aws-lambda`)
-   - WebSocket and Admin Lambdas pointing at `lambda-bundle`
+   - WebSocket and Admin Lambdas pointing at `lambda/websocket-handler` and `lambda/admin-api`
 
 10. **CfnApp** / **CfnBranch** (`aws-cdk-lib/aws-amplify`)
     - Amplify app and branch with build spec and env vars
@@ -240,8 +242,8 @@ backend/
 
 ### Authentication
 
-- **Admin Dashboard**: No authentication in current implementation; architecture diagram shows Cognito, which is not yet wired.
-- **Chat / Feedback**: No user auth; identified by WebSocket `connectionId` only.
+- **Admin Dashboard**: GET and DELETE admin routes require Cognito JWT (Authorization header). POST /feedback and POST /escalations are public.
+- **Chat / Feedback / Escalation**: No user auth; identified by WebSocket `connectionId` only.
 
 ### Authorization
 
@@ -260,7 +262,7 @@ backend/
 
 ### Data Privacy
 
-- **Conversation Logs**: Store messages and feedback for analytics and admin views; consider PII and retention policy.
+- **Conversation History**: Stores Q&A with feedback for analytics and admin views; consider PII and retention policy.
 - **Escalation Requests**: Include name, email, phone, question; handle per USDA privacy requirements.
 
 ---
@@ -277,8 +279,8 @@ backend/
 ### Performance Optimizations
 
 - **Streaming**: Chat responses streamed over WebSocket to reduce perceived latency.
-- **Projections / Filters**: Admin Lambda uses projections and filters to limit DynamoDB reads where possible.
-- **Feedback resolution**: Admin fetches conversations by `connectionId` for feedback detail views.
+- **Projections / Filters**: Admin Lambda uses GSIs (date, feedback) and projections to limit DynamoDB reads.
+- **Feedback**: Admin lists conversations with feedback via `feedback-timestamp-index`; no separate “get by conversationId” endpoint in current implementation.
 
 ### Cost Optimization
 
@@ -297,17 +299,13 @@ User → Amplify (Frontend) → WebSocket API → WebSocket Handler Lambda
                                                       ↓
                                               Guardrail (input)
                                                       ↓
-                                              Save user message → DynamoDB (Conversation Logs)
+                                              Bedrock Knowledge Base (RetrieveAndGenerate)
                                                       ↓
-                                              Bedrock Knowledge Base (Retrieve)
+                                              OpenSearch Serverless (vector search) + Nova Pro
                                                       ↓
-                                              OpenSearch Serverless (vector search)
+                                              sendMessage response (answer, citations, conversationId) → User
                                                       ↓
-                                              ConverseStream (Nova Pro) → stream chunks → User
-                                                      ↓
-                                              Save assistant message → DynamoDB
-                                                      ↓
-                                              sendMessage response (citations) → User
+                                              (Conversation saved to DynamoDB only when user submits feedback via submitFeedback)
 ```
 
 ### Feedback Flow
@@ -315,7 +313,7 @@ User → Amplify (Frontend) → WebSocket API → WebSocket Handler Lambda
 ```
 User (thumbs up/down) → WebSocket (submitFeedback) → WebSocket Handler Lambda
                                                               ↓
-                                                    Save feedback → DynamoDB (Conversation Logs)
+                                                    Save feedback + conversation → DynamoDB (Conversation History)
                                                               ↓
                                                     feedbackReceived → User
 ```
@@ -327,7 +325,7 @@ Admin → Amplify (/admin) → HTTP API (GET /metrics, /feedback, /escalations)
                                     ↓
                           Admin Handler Lambda
                                     ↓
-                          DynamoDB (Conversation Logs, Escalation Requests)
+                          DynamoDB (Conversation History, Escalation Requests)
                                     ↓
                           JSON response → Admin (metrics, tables, modals)
 ```
