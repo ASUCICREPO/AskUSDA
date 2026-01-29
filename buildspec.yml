@@ -56,7 +56,7 @@ phases:
       - echo "Deploying frontend to Amplify..."
       - echo "Creating Amplify deployment..."
       - cd ..
-      - aws amplify create-deployment --app-id $AMPLIFY_APP_ID --branch-name codeBuild --region $AWS_DEFAULT_REGION --output json > deployment_response.json
+      - aws amplify create-deployment --app-id $AMPLIFY_APP_ID --branch-name master --region $AWS_DEFAULT_REGION --output json > deployment_response.json
       - |
         if [ $? -ne 0 ]; then
           echo "Failed to create Amplify deployment. Check if a deployment is already running."
@@ -75,5 +75,5 @@ phases:
           exit 1
         fi
       - echo "Starting deployment..."
-      - aws amplify start-deployment --app-id $AMPLIFY_APP_ID --branch-name codeBuild --job-id $JOB_ID --region $AWS_DEFAULT_REGION
+      - aws amplify start-deployment --app-id $AMPLIFY_APP_ID --branch-name master --job-id $JOB_ID --region $AWS_DEFAULT_REGION
       - echo "Complete deployment finished successfully!"

@@ -156,25 +156,25 @@ fi
 # Check if main branch exists
 EXISTING_BRANCH=$(AWS_PAGER="" aws amplify get-branch \
     --app-id "$AMPLIFY_APP_ID" \
-    --branch-name codeBuild \
+    --branch-name master \
     --query 'branch.branchName' \
     --output text \
     --region "$AWS_REGION" 2>/dev/null || echo "None")
 
-if [ "$EXISTING_BRANCH" = "codeBuild" ]; then
-    print_warning "codeBuild branch already exists"
+if [ "$EXISTING_BRANCH" = "master" ]; then
+    print_warning "master branch already exists"
 else
-    # Create codeBuild branch
-    print_status "Creating codeBuild branch..."
+    # Create master branch
+    print_status "Creating master branch..."
 
     AWS_PAGER="" aws amplify create-branch \
         --app-id "$AMPLIFY_APP_ID" \
-        --branch-name codeBuild \
+        --branch-name master \
         --description "CodeBuild deployment branch" \
         --stage PRODUCTION \
         --no-enable-auto-build \
         --region "$AWS_REGION" || print_error "Failed to create Amplify branch."
-    print_success "codeBuild branch created"
+    print_success "master branch created"
 fi
 
 # --- Phase 3: Create Unified CodeBuild Project ---
@@ -213,7 +213,7 @@ SOURCE='{
 }'
 
 ARTIFACTS='{"type":"NO_ARTIFACTS"}'
-SOURCE_VERSION="codeBuild"
+SOURCE_VERSION="master"
 
 print_status "Creating unified CodeBuild project '$CODEBUILD_PROJECT_NAME'..."
 AWS_PAGER="" aws codebuild create-project \
@@ -389,7 +389,7 @@ echo ""
 echo "   WebSocket URL: $WEBSOCKET_URL"
 echo "   Admin API URL: $ADMIN_API_URL"
 echo "   Amplify App ID: $AMPLIFY_APP_ID"
-echo "   Frontend URL: https://codeBuild.$AMPLIFY_URL"
+echo "   Frontend URL: https://master.$AMPLIFY_URL"
 echo "   CDK Stack: $STACK_NAME"
 echo "   AWS Region: $AWS_REGION"
 echo ""
@@ -403,6 +403,6 @@ echo "   - Bedrock Guardrails for content filtering"
 echo "   - Admin HTTP API for escalation management"
 echo "   - Frontend built and deployed to Amplify via CodeBuild"
 echo ""
-echo "Frontend URL: https://codeBuild.$AMPLIFY_URL"
+echo "Frontend URL: https://master.$AMPLIFY_URL"
 echo ""
 echo "=========================================================================="
