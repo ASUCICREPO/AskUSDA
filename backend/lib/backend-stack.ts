@@ -185,6 +185,7 @@ export class USDAChatbotStack extends cdk.Stack {
           },
           crawlerConfiguration: {
             crawlerLimits: {
+              maxPages: 1500, // Limit to 1500 pages to stay under MaxIngestionFileCountPerJob limit
               rateLimit: 50,
             },
             scope: 'HOST_ONLY',
