@@ -21,7 +21,12 @@ const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
 
 // Helper to send message to WebSocket client
 async function sendToClient(connectionId, data) {
-  const endpoint = WEBSOCKET_ENDPOINT.replace('wss://', 'https://').replace('/prod', '');
+  // The WEBSOCKET_ENDPOINT is the callback URL which already includes the stage
+  // Format: https://{api-id}.execute-api.{region}.amazonaws.com/{stage}
+  const endpoint = WEBSOCKET_ENDPOINT.replace('wss://', 'https://');
+  
+  console.log('Sending to client, endpoint:', endpoint, 'connectionId:', connectionId);
+  
   const apiGatewayClient = new ApiGatewayManagementApiClient({
     endpoint: endpoint,
   });

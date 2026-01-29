@@ -640,8 +640,8 @@ export default function ChatBot() {
                         </div>
                       </div>
                     )}
-                    {/* Feedback Buttons - only for bot messages, not welcome message, not while streaming */}
-                    {message.sender === "bot" && message.id !== "1" && !message.isStreaming && (
+                    {/* Feedback Buttons - only for bot messages with conversationId, not welcome message, not while streaming */}
+                    {message.sender === "bot" && message.id !== "1" && !message.isStreaming && message.conversationId && (
                       <div className="mt-3 border-t border-gray-200 pt-2">
                         {message.feedback ? (
                           <div className="flex items-center gap-2">
