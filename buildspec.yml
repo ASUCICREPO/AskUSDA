@@ -1,0 +1,79 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+    commands:
+      - echo "Installing AWS CDK CLI..."
+      - npm install -g aws-cdk
+      - echo "Installing zip utility for frontend..."
+      - yum install -y zip
+
+  pre_build:
+    commands:
+      - echo "=== BACKEND DEPLOYMENT ==="
+      - echo "Changing into backend directory"
+      - cd backend
+      - echo "Installing backend dependencies..."
+      - npm ci
+      - echo "Bootstrapping CDK..."
+      - cdk bootstrap --require-approval never --context amplifyAppId=$AMPLIFY_APP_ID
+
+  build:
+    commands:
+      - echo "Deploying CDK stack..."
+      - cdk deploy --require-approval never --context amplifyAppId=$AMPLIFY_APP_ID
+      - echo "CDK deployment complete."
+      - echo "Extracting stack outputs..."
+      - cd ..
+      - export WEBSOCKET_URL=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`WebSocketUrl`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - export ADMIN_API_URL=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminApiUrl`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - export COGNITO_USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminUserPoolId`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - export COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name AskUSDA-Backend --query 'Stacks[0].Outputs[?OutputKey==`AdminUserPoolClientId`].OutputValue' --output text --region $AWS_DEFAULT_REGION)
+      - echo "WebSocket URL=$WEBSOCKET_URL"
+      - echo "Admin API URL=$ADMIN_API_URL"
+      - echo "Cognito User Pool ID=$COGNITO_USER_POOL_ID"
+      - echo "Cognito Client ID=$COGNITO_CLIENT_ID"
+      - echo ""
+      - echo "=== FRONTEND DEPLOYMENT ==="
+      - cd frontend
+      - echo "Installing frontend dependencies..."
+      - npm ci
+      - echo "Creating .env.local with environment variables..."
+      - echo "NEXT_PUBLIC_WEBSOCKET_URL=$WEBSOCKET_URL" | tee .env.local
+      - echo "NEXT_PUBLIC_ADMIN_API_URL=$ADMIN_API_URL" | tee -a .env.local
+      - echo "NEXT_PUBLIC_COGNITO_USER_POOL_ID=$COGNITO_USER_POOL_ID" | tee -a .env.local
+      - echo "NEXT_PUBLIC_COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID" | tee -a .env.local
+      - echo "NEXT_PUBLIC_AWS_REGION=$AWS_DEFAULT_REGION" | tee -a .env.local
+      - echo "Building Next.js application..."
+      - npm run build
+      - echo "Creating deployment package..."
+      - cd out && zip -r build.zip .
+
+  post_build:
+    commands:
+      - echo "Deploying frontend to Amplify..."
+      - echo "Creating Amplify deployment..."
+      - cd ..
+      - aws amplify create-deployment --app-id $AMPLIFY_APP_ID --branch-name master --region $AWS_DEFAULT_REGION --output json > deployment_response.json
+      - |
+        if [ $? -ne 0 ]; then
+          echo "Failed to create Amplify deployment. Check if a deployment is already running."
+          cat deployment_response.json
+          exit 1
+        fi
+      - echo "Extracting upload URL and job ID..."
+      - export UPLOAD_URL=$(node -e "const data=require('./deployment_response.json'); console.log(data.zipUploadUrl)")
+      - export JOB_ID=$(node -e "const data=require('./deployment_response.json'); console.log(data.jobId)")
+      - echo "Uploading build.zip to Amplify..."
+      - cd out
+      - curl -X PUT -T build.zip "$UPLOAD_URL"
+      - |
+        if [ $? -ne 0 ]; then
+          echo "Failed to upload build.zip to Amplify"
+          exit 1
+        fi
+      - echo "Starting deployment..."
+      - aws amplify start-deployment --app-id $AMPLIFY_APP_ID --branch-name master --job-id $JOB_ID --region $AWS_DEFAULT_REGION
+      - echo "Complete deployment finished successfully!"

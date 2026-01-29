@@ -4,45 +4,61 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as apigatewayv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
-import * as amplify from 'aws-cdk-lib/aws-amplify';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // ==================== DynamoDB - Conversation Logs ====================
-    const conversationLogsTable = new dynamodb.Table(this, 'ConversationLogs', {
-      tableName: 'AskUSDA-ConversationLogs',
-      partitionKey: { name: 'connectionId', type: dynamodb.AttributeType.STRING },
+    // ==================== DynamoDB - Conversation History ====================
+    // Table to store conversation history for analytics and admin dashboard
+    const conversationHistoryTable = new dynamodb.Table(this, 'ConversationHistory', {
+      tableName: 'AskUSDA-ConversationHistory',
+      partitionKey: { name: 'conversationId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
     });
 
-    conversationLogsTable.addGlobalSecondaryIndex({
-      indexName: 'SessionIndex',
+    // GSI for querying by sessionId
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'sessionId-timestamp-index',
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for querying by date (for admin dashboard analytics)
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'date-timestamp-index',
+      partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
+    });
+
+    // GSI for querying by feedback status
+    conversationHistoryTable.addGlobalSecondaryIndex({
+      indexName: 'feedback-timestamp-index',
+      partitionKey: { name: 'feedback', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
     // ==================== DynamoDB - Escalation Requests ====================
     const escalationTable = new dynamodb.Table(this, 'EscalationRequests', {
       tableName: 'AskUSDA-EscalationRequests',
-      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      sortKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: 'escalationId', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: 'ttl',
     });
 
     escalationTable.addGlobalSecondaryIndex({
-      indexName: 'DateIndex',
-      partitionKey: { name: 'requestDate', type: dynamodb.AttributeType.STRING },
+      indexName: 'DateTimestampIndex',
+      partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
@@ -178,6 +194,9 @@ export class USDAChatbotStack extends cdk.Stack {
     // Ensure data source is created after knowledge base
     webCrawlerDataSource.addDependency(knowledgeBase);
 
+    // NOTE: Knowledge Base sync is done manually after deployment via AWS Console or CLI:
+    // aws bedrock-agent start-ingestion-job --knowledge-base-id <KB_ID> --data-source-id <DS_ID>
+
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -186,7 +205,8 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     });
 
-    conversationLogsTable.grantReadWriteData(lambdaRole);
+    conversationHistoryTable.grantReadWriteData(lambdaRole);
+    escalationTable.grantReadWriteData(lambdaRole);
 
     // Bedrock permissions - Nova Pro & Titan Embeddings
     lambdaRole.addToPolicy(new iam.PolicyStatement({
@@ -225,12 +245,21 @@ export class USDAChatbotStack extends cdk.Stack {
       functionName: 'AskUSDA-WebSocketHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda-bundle'),
+      code: lambda.Code.fromAsset('lambda/websocket-handler', {
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            'npm install && cp -au . /asset-output'
+          ],
+        },
+      }),
       role: lambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: {
-        CONVERSATION_TABLE: conversationLogsTable.tableName,
+        CONVERSATION_TABLE: conversationHistoryTable.tableName,
+        ESCALATION_TABLE: escalationTable.tableName,
         OPENSEARCH_ENDPOINT: vectorCollection.collectionEndpoint,
         BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
         EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
@@ -259,6 +288,10 @@ export class USDAChatbotStack extends cdk.Stack {
 
     webSocketApi.addRoute('submitFeedback', {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitFeedbackIntegration', webSocketHandler),
+    });
+
+    webSocketApi.addRoute('submitEscalation', {
+      integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitEscalationIntegration', webSocketHandler),
     });
 
     const webSocketStage = new apigatewayv2.WebSocketStage(this, 'WebSocketStage', {
@@ -299,6 +332,43 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:guardrail/${guardrail.attrGuardrailId}`],
     }));
 
+    // ==================== Cognito User Pool for Admin Authentication ====================
+    const adminUserPool = new cognito.UserPool(this, 'AdminUserPool', {
+      userPoolName: 'AskUSDA-AdminPool',
+      selfSignUpEnabled: false, // Only admins can create users
+      signInAliases: {
+        email: true, // Use email as the sign-in identifier
+      },
+      autoVerify: {
+        email: true,
+      },
+      standardAttributes: {
+        email: {
+          required: true,
+          mutable: true,
+        },
+      },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: false,
+      },
+      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // App client for the admin dashboard
+    const adminAppClient = adminUserPool.addClient('AdminAppClient', {
+      authFlows: {
+        userPassword: true,
+        userSrp: true,
+      },
+      generateSecret: false, // For browser-based apps
+      preventUserExistenceErrors: true,
+    });
+
     // ==================== Admin API Lambda ====================
     const adminLambdaRole = new iam.Role(this, 'AdminLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -308,20 +378,30 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     // Grant DynamoDB access to admin Lambda
-    conversationLogsTable.grantReadWriteData(adminLambdaRole);
+    conversationHistoryTable.grantReadWriteData(adminLambdaRole);
     escalationTable.grantReadWriteData(adminLambdaRole);
 
     const adminHandler = new lambda.Function(this, 'AdminHandler', {
       functionName: 'AskUSDA-AdminHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'admin.handler',
-      code: lambda.Code.fromAsset('lambda-bundle'),
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/admin-api', {
+        bundling: {
+          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
+          command: [
+            'bash', '-c',
+            'npm install && cp -au . /asset-output'
+          ],
+        },
+      }),
       role: adminLambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       environment: {
-        CONVERSATION_TABLE: conversationLogsTable.tableName,
+        CONVERSATION_TABLE: conversationHistoryTable.tableName,
         ESCALATION_TABLE: escalationTable.tableName,
+        DATE_INDEX: 'date-timestamp-index',
+        FEEDBACK_INDEX: 'feedback-timestamp-index',
       },
     });
 
@@ -342,84 +422,61 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
 
+    // JWT Authorizer for Cognito
+    const jwtAuthorizer = new apigatewayv2_authorizers.HttpJwtAuthorizer(
+      'AdminJwtAuthorizer',
+      `https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com/${adminUserPool.userPoolId}`,
+      {
+        jwtAudience: [adminAppClient.userPoolClientId],
+      }
+    );
+
     // Add routes
     const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration(
       'AdminIntegration',
       adminHandler
     );
 
+    // Protected routes (require Cognito auth)
     adminApi.addRoutes({
       path: '/metrics',
       methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/feedback',
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/escalations',
-      methods: [apigatewayv2.HttpMethod.GET, apigatewayv2.HttpMethod.POST],
+      methods: [apigatewayv2.HttpMethod.GET],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
     adminApi.addRoutes({
       path: '/escalations/{id}',
       methods: [apigatewayv2.HttpMethod.DELETE],
       integration: adminIntegration,
+      authorizer: jwtAuthorizer,
     });
 
-    // ==================== Amplify Hosting ====================
-    // Note: You need to create a GitHub token secret in Secrets Manager first
-    // aws secretsmanager create-secret --name github-token --secret-string "your-github-token"
-    const githubToken = secretsmanager.Secret.fromSecretNameV2(this, 'GitHubToken', 'usda-token');
-
-    const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
-      name: 'AskUSDA-Frontend',
-      description: 'AskUSDA Chatbot Frontend',
-      repository: 'https://github.com/ASUCICREPO/AskUSDA', // Update with your repo
-      accessToken: githubToken.secretValue.unsafeUnwrap(),
-      platform: 'WEB_COMPUTE',
-      environmentVariables: [
-        { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
-        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
-      ],
-      buildSpec: cdk.Fn.sub(`
-version: 1
-applications:
-  - frontend:
-      phases:
-        preBuild:
-          commands:
-            - npm ci
-        build:
-          commands:
-            - npm run build
-      artifacts:
-        baseDirectory: .next
-        files:
-          - '**/*'
-      cache:
-        paths:
-          - node_modules/**/*
-          - .next/cache/**/*
-    appRoot: frontend
-`),
+    // Public routes (no auth required - for submitting feedback/escalations from chatbot)
+    adminApi.addRoutes({
+      path: '/feedback',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: adminIntegration,
     });
 
-    // Master branch
-    new amplify.CfnBranch(this, 'MasterBranch', {
-      appId: amplifyApp.attrAppId,
-      branchName: 'master',
-      enableAutoBuild: true,
-      stage: 'PRODUCTION',
-      environmentVariables: [
-        { name: 'NEXT_PUBLIC_WEBSOCKET_URL', value: webSocketStage.url },
-        { name: 'NEXT_PUBLIC_ADMIN_API_URL', value: adminApi.apiEndpoint },
-      ],
+    adminApi.addRoutes({
+      path: '/escalations',
+      methods: [apigatewayv2.HttpMethod.POST],
+      integration: adminIntegration,
     });
 
     // ==================== Stack Outputs ====================
@@ -430,8 +487,8 @@ applications:
     });
 
     new cdk.CfnOutput(this, 'ConversationTableName', {
-      value: conversationLogsTable.tableName,
-      description: 'DynamoDB Conversation Logs Table',
+      value: conversationHistoryTable.tableName,
+      description: 'DynamoDB Conversation History Table',
       exportName: 'AskUSDA-ConversationTable',
     });
 
@@ -459,12 +516,6 @@ applications:
       exportName: 'AskUSDA-GuardrailId',
     });
 
-    new cdk.CfnOutput(this, 'AmplifyAppUrl', {
-      value: `https://master.${amplifyApp.attrDefaultDomain}`,
-      description: 'Amplify App URL',
-      exportName: 'AskUSDA-AmplifyUrl',
-    });
-
     new cdk.CfnOutput(this, 'AdminApiUrl', {
       value: adminApi.apiEndpoint,
       description: 'Admin API URL',
@@ -475,6 +526,19 @@ applications:
       value: escalationTable.tableName,
       description: 'DynamoDB Escalation Requests Table',
       exportName: 'AskUSDA-EscalationTable',
+    });
+
+    // Cognito Outputs
+    new cdk.CfnOutput(this, 'AdminUserPoolId', {
+      value: adminUserPool.userPoolId,
+      description: 'Cognito User Pool ID for admin authentication',
+      exportName: 'AskUSDA-AdminUserPoolId',
+    });
+
+    new cdk.CfnOutput(this, 'AdminUserPoolClientId', {
+      value: adminAppClient.userPoolClientId,
+      description: 'Cognito App Client ID for admin dashboard',
+      exportName: 'AskUSDA-AdminUserPoolClientId',
     });
   }
 }

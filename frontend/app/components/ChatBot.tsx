@@ -18,10 +18,14 @@ interface Message {
   citations?: Citation[];
   isStreaming?: boolean;
   feedback?: "positive" | "negative" | null;
+  conversationId?: string;
+  sessionId?: string;
+  responseTimeMs?: number;
+  question?: string; // The user's question that prompted this response
 }
 
 interface WebSocketMessage {
-  type: "stream" | "response" | "typing" | "error" | "feedbackReceived";
+  type: "stream" | "response" | "typing" | "error" | "feedbackConfirmation" | "conversationId" | "message" | "escalationConfirmation";
   chunk?: string;
   isComplete?: boolean;
   message?: string;
@@ -29,6 +33,13 @@ interface WebSocketMessage {
   blocked?: boolean;
   status?: boolean;
   feedback?: "positive" | "negative";
+  conversationId?: string;
+  sessionId?: string;
+  responseTimeMs?: number;
+  isTyping?: boolean;
+  success?: boolean;
+  escalationId?: string;
+  question?: string; // The original question (echoed back from server)
 }
 
 const suggestedQuestions = [
@@ -43,6 +54,8 @@ const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "";
 export default function ChatBot() {
   const [isOpen, setIsOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+  const [sessionId, setSessionId] = useState<string>("");
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -126,8 +139,55 @@ export default function ChatBot() {
   // Handle incoming WebSocket messages
   const handleWebSocketMessage = useCallback((data: WebSocketMessage) => {
     switch (data.type) {
+      case "conversationId":
+        // Store conversation ID for feedback tracking
+        if (data.conversationId && streamingMessageIdRef.current) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMessageIdRef.current
+                ? { ...msg, conversationId: data.conversationId }
+                : msg
+            )
+          );
+        }
+        break;
+
       case "typing":
-        setIsTyping(data.status || false);
+        setIsTyping(data.isTyping || false);
+        break;
+
+      case "message":
+        // Complete message with all data
+        const messageId = streamingMessageIdRef.current || Date.now().toString();
+        setMessages((prev) => {
+          const existingIndex = prev.findIndex(msg => msg.id === messageId);
+          const newMessage: Message = {
+            id: messageId,
+            text: data.message || "",
+            sender: "bot",
+            timestamp: new Date(),
+            citations: data.citations,
+            conversationId: data.conversationId,
+            sessionId: data.sessionId,
+            responseTimeMs: data.responseTimeMs,
+            question: data.question, // Store the question for feedback submission
+            isStreaming: false,
+          };
+          
+          if (existingIndex >= 0) {
+            return prev.map((msg, idx) => idx === existingIndex ? newMessage : msg);
+          } else {
+            return [...prev, newMessage];
+          }
+        });
+        
+        if (data.sessionId) {
+          setSessionId(data.sessionId);
+        }
+        
+        currentStreamingMessageRef.current = "";
+        streamingMessageIdRef.current = null;
+        setIsTyping(false);
         break;
 
       case "stream":
@@ -222,14 +282,35 @@ export default function ChatBot() {
         setIsTyping(false);
         break;
 
-      case "feedbackReceived":
-        console.log("Feedback received:", data.feedback);
+      case "feedbackConfirmation":
+        console.log("Feedback confirmed:", data.feedback, "for", data.conversationId);
+        break;
+
+      case "escalationConfirmation":
+        if (data.success) {
+          setShowSupportModal(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now().toString(),
+              text: data.message || "Your support request has been submitted. We will contact you soon.",
+              sender: "bot",
+              timestamp: new Date(),
+            },
+          ]);
+        }
         break;
     }
   }, []);
 
-  // Send feedback to backend
+  // Send feedback to backend (this also saves the conversation - only conversations with feedback are stored)
   const handleFeedback = useCallback((messageId: string, feedback: "positive" | "negative") => {
+    const message = messages.find(msg => msg.id === messageId);
+    if (!message?.conversationId) {
+      console.warn("No conversation ID for feedback");
+      return;
+    }
+
     // Update local state immediately for responsive UI
     setMessages((prev) =>
       prev.map((msg) =>
@@ -237,17 +318,22 @@ export default function ChatBot() {
       )
     );
 
-    // Send to backend via WebSocket
+    // Send to backend via WebSocket - include all data needed to save the conversation
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
           action: "submitFeedback",
           feedback,
-          messageId,
+          conversationId: message.conversationId,
+          question: message.question,
+          answer: message.text,
+          sessionId: message.sessionId || sessionId,
+          responseTimeMs: message.responseTimeMs,
+          citations: message.citations,
         })
       );
     }
-  }, []);
+  }, [messages, sessionId]);
 
   // Connect when chat opens
   useEffect(() => {
@@ -285,7 +371,7 @@ export default function ChatBot() {
         JSON.stringify({
           action: "sendMessage",
           message: text.trim(),
-          useStreaming: true,
+          sessionId: sessionId || undefined,
         })
       );
     } else {
@@ -313,6 +399,29 @@ export default function ChatBot() {
 
   const handleSuggestedQuestion = (question: string) => {
     handleSendMessage(question);
+  };
+
+  // Handle support form submission
+  const handleSupportSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    
+    const supportData = {
+      name: formData.get("name") as string,
+      email: formData.get("email") as string,
+      phone: formData.get("phone") as string,
+      question: formData.get("question") as string,
+    };
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          action: "submitEscalation",
+          ...supportData,
+          sessionId: sessionId || undefined,
+        })
+      );
+    }
   };
 
   return (
@@ -378,6 +487,28 @@ export default function ChatBot() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Support/Email button */}
+              <button
+                onClick={() => setShowSupportModal(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
+                aria-label="Contact support"
+                title="Contact support"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="2" y="4" width="20" height="16" rx="2" />
+                  <path d="m22 7-10 5L2 7" />
+                </svg>
+              </button>
               {/* Connection status indicator */}
               <div
                 className={`h-2 w-2 rounded-full ${
@@ -521,8 +652,8 @@ export default function ChatBot() {
                         </div>
                       </div>
                     )}
-                    {/* Feedback Buttons - only for bot messages, not welcome message, not while streaming */}
-                    {message.sender === "bot" && message.id !== "1" && !message.isStreaming && (
+                    {/* Feedback Buttons - only for bot messages with conversationId, not welcome message, not while streaming */}
+                    {message.sender === "bot" && message.id !== "1" && !message.isStreaming && message.conversationId && (
                       <div className="mt-3 border-t border-gray-200 pt-2">
                         {message.feedback ? (
                           <div className="flex items-center gap-2">
@@ -690,6 +821,114 @@ export default function ChatBot() {
                 </svg>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Support Modal */}
+      {showSupportModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">Contact Support</h3>
+              <button
+                onClick={() => setShowSupportModal(false)}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                aria-label="Close"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            
+            <p className="mb-4 text-sm text-gray-600">
+              Need help? Fill out this form and our team will get back to you soon.
+            </p>
+
+            <form onSubmit={handleSupportSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
+                  Name *
+                </label>
+                <input
+                  type="text"
+                  id="name"
+                  name="name"
+                  required
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#002d72] focus:outline-none focus:ring-2 focus:ring-[#002d72]/20"
+                  placeholder="Your name"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+                  Email *
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  name="email"
+                  required
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#002d72] focus:outline-none focus:ring-2 focus:ring-[#002d72]/20"
+                  placeholder="your.email@example.com"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="phone" className="block text-sm font-medium text-gray-700 mb-1">
+                  Phone (optional)
+                </label>
+                <input
+                  type="tel"
+                  id="phone"
+                  name="phone"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#002d72] focus:outline-none focus:ring-2 focus:ring-[#002d72]/20"
+                  placeholder="(555) 123-4567"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="question" className="block text-sm font-medium text-gray-700 mb-1">
+                  How can we help you? *
+                </label>
+                <textarea
+                  id="question"
+                  name="question"
+                  required
+                  rows={4}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#002d72] focus:outline-none focus:ring-2 focus:ring-[#002d72]/20"
+                  placeholder="Please describe your question or issue..."
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowSupportModal(false)}
+                  className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 rounded-lg bg-[#002d72] px-4 py-2 text-sm font-medium text-white hover:bg-[#001f4d]"
+                >
+                  Submit Request
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
