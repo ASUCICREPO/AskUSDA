@@ -42,6 +42,9 @@ next-env.d.ts
 *.swp
 *.swo
 
+# Kiro
+.kiro/
+
 # Environment variables
 .env
 **/.env
