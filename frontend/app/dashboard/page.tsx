@@ -402,24 +402,24 @@ export default function AdminPage() {
         {metrics && (
           <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
             {/* Conversations Over Time - Area Chart */}
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-gray-900">Conversations Over Time</h3>
-                <span className="text-sm text-gray-500">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg font-semibold text-slate-800">Conversations Over Time</h3>
+                <span className="text-sm text-slate-400">
                   {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 
                     ? `${metrics.conversationsByDay[0]?.label} - ${metrics.conversationsByDay[metrics.conversationsByDay.length - 1]?.label}, 2026`
                     : 'Last 7 days'}
                 </span>
               </div>
-              <p className="text-xs text-gray-400 mb-4">Click on a data point to view conversations</p>
+              <p className="text-xs text-slate-400 mb-6">Click on a data point to view conversations</p>
               
               {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 ? (
-                <div className="relative h-48">
+                <div className="relative h-52">
                   {/* Y-axis labels */}
-                  <div className="absolute left-0 top-0 bottom-8 w-8 flex flex-col justify-between text-xs text-gray-400">
+                  <div className="absolute left-0 top-0 bottom-6 w-6 flex flex-col justify-between text-xs text-slate-400">
                     {(() => {
                       const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count), 1);
-                      const steps = [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0];
+                      const steps = [maxCount, Math.round(maxCount * 0.5), 0];
                       return steps.map((val, i) => (
                         <span key={i}>{val}</span>
                       ));
@@ -427,114 +427,127 @@ export default function AdminPage() {
                   </div>
                   
                   {/* Chart area */}
-                  <div className="ml-10 h-40 relative">
+                  <div className="ml-8 h-44 relative">
                     {/* Grid lines */}
-                    <div className="absolute inset-0 flex flex-col justify-between">
-                      {[0, 1, 2, 3, 4].map((i) => (
-                        <div key={i} className="border-t border-gray-100 w-full" />
+                    <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+                      {[0, 1, 2].map((i) => (
+                        <div key={i} className="border-t border-slate-100 w-full" />
                       ))}
                     </div>
                     
                     {/* SVG Area Chart */}
-                    <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
+                    <svg className="absolute inset-0 w-full h-full overflow-visible" viewBox="0 0 100 100" preserveAspectRatio="none">
                       <defs>
                         <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                          <stop offset="0%" stopColor="#002d72" stopOpacity="0.3" />
-                          <stop offset="100%" stopColor="#002d72" stopOpacity="0.05" />
+                          <stop offset="0%" stopColor="#4B7BF5" stopOpacity="0.2" />
+                          <stop offset="100%" stopColor="#4B7BF5" stopOpacity="0" />
                         </linearGradient>
                       </defs>
                       {(() => {
                         const data = metrics.conversationsByDay;
                         const maxCount = Math.max(...data.map(d => d.count), 1);
-                        const width = 100;
-                        const height = 100;
                         const points = data.map((d, i) => ({
-                          x: (i / (data.length - 1)) * width,
-                          y: height - (d.count / maxCount) * height,
+                          x: data.length === 1 ? 50 : (i / (data.length - 1)) * 100,
+                          y: 100 - (d.count / maxCount) * 100,
                         }));
                         
-                        // Create smooth curve path
-                        const linePath = points.map((p, i) => {
-                          if (i === 0) return `M ${p.x} ${p.y}`;
-                          const prev = points[i - 1];
-                          const cpx1 = prev.x + (p.x - prev.x) / 3;
-                          const cpx2 = prev.x + (p.x - prev.x) * 2 / 3;
-                          return `C ${cpx1} ${prev.y}, ${cpx2} ${p.y}, ${p.x} ${p.y}`;
-                        }).join(' ');
+                        // Create smooth curve path using quadratic bezier
+                        let linePath = '';
+                        points.forEach((p, i) => {
+                          if (i === 0) {
+                            linePath = `M ${p.x} ${p.y}`;
+                          } else {
+                            const prev = points[i - 1];
+                            const midX = (prev.x + p.x) / 2;
+                            linePath += ` Q ${prev.x} ${prev.y}, ${midX} ${(prev.y + p.y) / 2}`;
+                            if (i === points.length - 1) {
+                              linePath += ` T ${p.x} ${p.y}`;
+                            }
+                          }
+                        });
                         
-                        const areaPath = `${linePath} L ${width} ${height} L 0 ${height} Z`;
+                        // Simpler line path for area
+                        const simpleLinePath = points.map((p, i) => 
+                          i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`
+                        ).join(' ');
+                        
+                        const areaPath = `${simpleLinePath} L 100 100 L 0 100 Z`;
                         
                         return (
                           <>
                             {/* Area fill */}
-                            <path
-                              d={areaPath}
-                              fill="url(#areaGradient)"
-                              vectorEffect="non-scaling-stroke"
-                            />
+                            <path d={areaPath} fill="url(#areaGradient)" />
                             {/* Line */}
                             <path
-                              d={linePath}
+                              d={simpleLinePath}
                               fill="none"
-                              stroke="#002d72"
+                              stroke="#4B7BF5"
                               strokeWidth="2"
                               vectorEffect="non-scaling-stroke"
                             />
-                            {/* Data points */}
-                            {points.map((p, i) => (
-                              <circle
-                                key={i}
-                                cx={`${p.x}%`}
-                                cy={`${p.y}%`}
-                                r="4"
-                                fill="#002d72"
-                                className="cursor-pointer hover:r-6 transition-all"
-                              >
-                                <title>{data[i].count} conversations on {data[i].date}</title>
-                              </circle>
-                            ))}
                           </>
                         );
                       })()}
                     </svg>
+                    
+                    {/* Data points (separate div for proper sizing) */}
+                    <div className="absolute inset-0">
+                      {metrics.conversationsByDay.map((day, i) => {
+                        const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count), 1);
+                        const x = metrics.conversationsByDay.length === 1 ? 50 : (i / (metrics.conversationsByDay.length - 1)) * 100;
+                        const y = 100 - (day.count / maxCount) * 100;
+                        return (
+                          <div
+                            key={i}
+                            className="absolute w-3 h-3 bg-[#4B7BF5] rounded-full border-2 border-white shadow-sm cursor-pointer hover:scale-125 transition-transform"
+                            style={{ 
+                              left: `${x}%`, 
+                              top: `${y}%`,
+                              transform: 'translate(-50%, -50%)'
+                            }}
+                            title={`${day.count} conversations on ${day.date}`}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
                   
                   {/* X-axis labels */}
-                  <div className="ml-10 flex justify-between mt-2 text-xs text-gray-400">
+                  <div className="ml-8 flex justify-between mt-2 text-xs text-slate-400">
                     {metrics.conversationsByDay.map((day, i) => (
                       <span key={i}>{day.date.split('-')[2]}</span>
                     ))}
                   </div>
                 </div>
               ) : (
-                <div className="h-48 flex items-center justify-center text-gray-400">
+                <div className="h-52 flex items-center justify-center text-slate-400">
                   No conversation data available
                 </div>
               )}
             </div>
 
             {/* User Satisfaction - Circular Gauge */}
-            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-lg font-semibold text-gray-900">User Satisfaction</h3>
-                <span className="text-sm text-gray-500">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg font-semibold text-slate-800">User Satisfaction</h3>
+                <span className="text-sm text-slate-400">
                   {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 
                     ? `${metrics.conversationsByDay[0]?.label} - ${metrics.conversationsByDay[metrics.conversationsByDay.length - 1]?.label}, 2026`
                     : 'Last 7 days'}
                 </span>
               </div>
               
-              <div className="flex items-center gap-4 mb-4">
-                <label className="flex items-center gap-2 text-sm text-gray-500 cursor-pointer">
-                  <input type="checkbox" className="rounded border-gray-300" />
+              <div className="flex items-center gap-4 mb-6">
+                <label className="flex items-center gap-2 text-sm text-slate-500 cursor-pointer">
+                  <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-[#4B7BF5] focus:ring-[#4B7BF5]" />
                   Include &quot;No Feedback&quot;
                 </label>
-                <span className="text-sm text-gray-400 ml-auto">
+                <span className="text-sm text-slate-400 ml-auto">
                   {metrics.noFeedback || 0} without feedback
                 </span>
               </div>
 
-              <div className="flex items-center justify-center">
+              <div className="flex items-center justify-center py-4">
                 {/* Circular Gauge */}
                 <div className="relative">
                   <svg width="200" height="120" viewBox="0 0 200 120">
@@ -549,12 +562,12 @@ export default function AdminPage() {
                     <path
                       d="M 20 100 A 80 80 0 0 1 180 100"
                       fill="none"
-                      stroke="#e5e7eb"
+                      stroke="#e2e8f0"
                       strokeWidth="16"
                       strokeLinecap="round"
                     />
                     
-                    {/* Negative feedback arc (red) - small portion */}
+                    {/* Negative feedback arc (red) */}
                     {metrics.negativeFeedback > 0 && (
                       <path
                         d={(() => {
@@ -610,54 +623,16 @@ export default function AdminPage() {
               </div>
 
               {/* Legend */}
-              <div className="flex items-center justify-center gap-6 mt-4">
+              <div className="flex items-center justify-center gap-8 mt-2">
                 <div className="flex items-center gap-2">
                   <span className="w-3 h-3 rounded-full bg-green-500"></span>
-                  <span className="text-sm text-gray-600">{metrics.positiveFeedback || 0} positive</span>
+                  <span className="text-sm text-slate-600">{metrics.positiveFeedback || 0} positive</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="w-3 h-3 rounded-full bg-red-500"></span>
-                  <span className="text-sm text-gray-600">{metrics.negativeFeedback || 0} negative</span>
+                  <span className="text-sm text-slate-600">{metrics.negativeFeedback || 0} negative</span>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Daily Conversations Bar Chart */}
-        {metrics?.conversationsByDay && metrics.conversationsByDay.length > 0 && (
-          <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <h3 className="mb-6 text-lg font-semibold text-gray-900">Daily Conversations</h3>
-            <div className="flex items-end justify-between gap-4 h-56">
-              {metrics.conversationsByDay.map((day, index) => {
-                const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count), 1);
-                const height = maxCount > 0 ? (day.count / maxCount) * 100 : 0;
-                const hasData = day.count > 0;
-                
-                return (
-                  <div key={index} className="flex-1 flex flex-col items-center h-full">
-                    {/* Bar container */}
-                    <div className="flex-1 w-full flex items-end justify-center">
-                      <div 
-                        className={`w-full max-w-[60px] rounded-lg transition-all duration-300 ${
-                          hasData 
-                            ? 'bg-[#002d72] hover:bg-[#1a4a8a] cursor-pointer' 
-                            : 'bg-gray-100'
-                        }`}
-                        style={{ height: hasData ? `${Math.max(height, 5)}%` : '100%' }}
-                        title={`${day.count} conversations on ${day.date}`}
-                      />
-                    </div>
-                    {/* Labels */}
-                    <div className="mt-3 text-center">
-                      <p className={`text-sm font-semibold ${hasData ? 'text-gray-900' : 'text-gray-400'}`}>
-                        {day.count}
-                      </p>
-                      <p className="text-xs text-gray-500">{day.label}</p>
-                    </div>
-                  </div>
-                );
-              })}
             </div>
           </div>
         )}
