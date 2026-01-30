@@ -77,13 +77,16 @@ async function applyGuardrails(text) {
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
   
+  // Get region from environment or default to us-east-1
+  const region = process.env.AWS_REGION || 'us-east-1';
+  
   const params = {
     input: { text: question },
     retrieveAndGenerateConfiguration: {
       type: 'KNOWLEDGE_BASE',
       knowledgeBaseConfiguration: {
         knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        modelArn: `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
+        modelArn: `arn:aws:bedrock:${region}::foundation-model/amazon.nova-pro-v1:0`,
         retrievalConfiguration: {
           vectorSearchConfiguration: {
             numberOfResults: 5,
@@ -202,9 +205,27 @@ async function handleSendMessage(connectionId, body) {
 
   } catch (error) {
     console.error('Error processing message:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('Knowledge Base ID:', KNOWLEDGE_BASE_ID);
+    console.error('AWS Region:', process.env.AWS_REGION);
+    
+    // Provide more specific error messages based on error type
+    let errorMessage = 'An error occurred while processing your request. Please try again.';
+    if (error.name === 'AccessDeniedException') {
+      errorMessage = 'Access denied. Please check model access permissions.';
+    } else if (error.name === 'ResourceNotFoundException') {
+      errorMessage = 'Knowledge base not found. Please verify configuration.';
+    } else if (error.name === 'ValidationException') {
+      errorMessage = 'Invalid request. ' + (error.message || '');
+    } else if (error.name === 'ThrottlingException') {
+      errorMessage = 'Service is busy. Please try again in a moment.';
+    }
+    
     await sendToClient(connectionId, {
       type: 'error',
-      message: 'An error occurred while processing your request. Please try again.',
+      message: errorMessage,
     });
   }
 }
