@@ -295,14 +295,17 @@ exports.handler = async (event) => {
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
 
-    // Bedrock permissions - Foundation models
+    // Bedrock permissions - Foundation models (including cross-region for inference profiles)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
+        // Local region models
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.nova-pro-v1:0`,
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+        // Cross-region inference profile routes to us-east-1
+        `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
       ],
     }));
 
