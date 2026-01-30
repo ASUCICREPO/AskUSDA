@@ -295,17 +295,15 @@ exports.handler = async (event) => {
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
 
-    // Bedrock permissions - Foundation models (including cross-region for inference profiles)
+    // Bedrock permissions - Foundation models (all regions for cross-region inference)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
-        // Local region models
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.nova-pro-v1:0`,
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
-        // Cross-region inference profile routes to us-east-1
-        `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
+        // Allow Nova Pro in ALL regions (cross-region inference profile routes dynamically)
+        'arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0',
+        'arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0',
+        'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0',
       ],
     }));
 
@@ -318,7 +316,7 @@ exports.handler = async (event) => {
         'bedrock:GetInferenceProfile',
       ],
       resources: [
-        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`,
+        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/*`,
       ],
     }));
 
