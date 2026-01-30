@@ -170,7 +170,7 @@ export class USDAChatbotStack extends cdk.Stack {
 
     // Web Crawler Data Source
     const webCrawlerDataSource = new bedrock.CfnDataSource(this, 'WebCrawlerDataSource', {
-      name: 'AskUSDA-WebCrawler',
+      name: 'AskUSDA-WebCrawler-v2',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
       dataSourceConfiguration: {
         type: 'WEB',
