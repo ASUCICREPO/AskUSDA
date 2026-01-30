@@ -77,8 +77,15 @@ async function applyGuardrails(text) {
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
   
-  // Get region from environment or default to us-east-1
-  const region = process.env.AWS_REGION || 'us-east-1';
+  // Get region from environment
+  const region = process.env.AWS_REGION || 'us-west-2';
+  
+  // For Amazon Nova Pro, use the cross-region inference profile
+  // System-defined inference profiles use this format
+  const modelArn = `arn:aws:bedrock:${region}:${process.env.AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
+  
+  console.log('Using model ARN:', modelArn);
+  console.log('Knowledge Base ID:', KNOWLEDGE_BASE_ID);
   
   const params = {
     input: { text: question },
@@ -86,7 +93,7 @@ async function queryKnowledgeBase(question, sessionId) {
       type: 'KNOWLEDGE_BASE',
       knowledgeBaseConfiguration: {
         knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        modelArn: `arn:aws:bedrock:${region}::foundation-model/amazon.nova-pro-v1:0`,
+        modelArn: modelArn,
         retrievalConfiguration: {
           vectorSearchConfiguration: {
             numberOfResults: 5,

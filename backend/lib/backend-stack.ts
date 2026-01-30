@@ -295,13 +295,16 @@ exports.handler = async (event) => {
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
 
-    // Bedrock permissions - Nova Pro & Titan Embeddings
+    // Bedrock permissions - Nova Pro & Titan Embeddings (including inference profiles)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.nova-pro-v1:0`,
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
+        // Inference profile ARNs for Nova Pro
+        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`,
+        `arn:aws:bedrock:us-east-1:${cdk.Aws.ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`,
       ],
     }));
 
@@ -309,7 +312,11 @@ exports.handler = async (event) => {
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:Retrieve', 'bedrock:RetrieveAndGenerate'],
-      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
+      resources: [
+        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`,
+        // Also allow inference profile access for RetrieveAndGenerate
+        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/*`,
+      ],
     }));
 
     // OpenSearch Serverless permissions
@@ -351,6 +358,7 @@ exports.handler = async (event) => {
         BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
         EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
+        AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
       },
     });
 
