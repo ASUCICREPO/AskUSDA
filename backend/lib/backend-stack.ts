@@ -185,10 +185,18 @@ export class USDAChatbotStack extends cdk.Stack {
           },
           crawlerConfiguration: {
             crawlerLimits: {
-              maxPages: 1500, // Limit to 1500 pages to stay under MaxIngestionFileCountPerJob limit
+              maxPages: 1500,
               rateLimit: 50,
             },
             scope: 'HOST_ONLY',
+          },
+        },
+      },
+      vectorIngestionConfiguration: {
+        parsingConfiguration: {
+          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
+          bedrockFoundationModelConfiguration: {
+            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
           },
         },
       },
