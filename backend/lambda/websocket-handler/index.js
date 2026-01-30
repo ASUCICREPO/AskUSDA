@@ -80,8 +80,7 @@ async function queryKnowledgeBase(question, sessionId) {
   // Get region from environment
   const region = process.env.AWS_REGION || 'us-west-2';
   
-  // For Amazon Nova Pro, use the cross-region inference profile
-  // System-defined inference profiles use this format
+  // Use Amazon Nova Pro via inference profile
   const modelArn = `arn:aws:bedrock:${region}:${process.env.AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
   
   console.log('Using model ARN:', modelArn);
