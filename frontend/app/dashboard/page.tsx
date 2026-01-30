@@ -398,26 +398,261 @@ export default function AdminPage() {
           ))}
         </div>
 
-        {/* Conversations Chart */}
+        {/* Charts Section - Conversations Over Time & User Satisfaction */}
+        {metrics && (
+          <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {/* Conversations Over Time - Area Chart */}
+            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-semibold text-gray-900">Conversations Over Time</h3>
+                <span className="text-sm text-gray-500">
+                  {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 
+                    ? `${metrics.conversationsByDay[0]?.label} - ${metrics.conversationsByDay[metrics.conversationsByDay.length - 1]?.label}, 2026`
+                    : 'Last 7 days'}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">Click on a data point to view conversations</p>
+              
+              {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 ? (
+                <div className="relative h-48">
+                  {/* Y-axis labels */}
+                  <div className="absolute left-0 top-0 bottom-8 w-8 flex flex-col justify-between text-xs text-gray-400">
+                    {(() => {
+                      const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count), 1);
+                      const steps = [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0];
+                      return steps.map((val, i) => (
+                        <span key={i}>{val}</span>
+                      ));
+                    })()}
+                  </div>
+                  
+                  {/* Chart area */}
+                  <div className="ml-10 h-40 relative">
+                    {/* Grid lines */}
+                    <div className="absolute inset-0 flex flex-col justify-between">
+                      {[0, 1, 2, 3, 4].map((i) => (
+                        <div key={i} className="border-t border-gray-100 w-full" />
+                      ))}
+                    </div>
+                    
+                    {/* SVG Area Chart */}
+                    <svg className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
+                      <defs>
+                        <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                          <stop offset="0%" stopColor="#002d72" stopOpacity="0.3" />
+                          <stop offset="100%" stopColor="#002d72" stopOpacity="0.05" />
+                        </linearGradient>
+                      </defs>
+                      {(() => {
+                        const data = metrics.conversationsByDay;
+                        const maxCount = Math.max(...data.map(d => d.count), 1);
+                        const width = 100;
+                        const height = 100;
+                        const points = data.map((d, i) => ({
+                          x: (i / (data.length - 1)) * width,
+                          y: height - (d.count / maxCount) * height,
+                        }));
+                        
+                        // Create smooth curve path
+                        const linePath = points.map((p, i) => {
+                          if (i === 0) return `M ${p.x} ${p.y}`;
+                          const prev = points[i - 1];
+                          const cpx1 = prev.x + (p.x - prev.x) / 3;
+                          const cpx2 = prev.x + (p.x - prev.x) * 2 / 3;
+                          return `C ${cpx1} ${prev.y}, ${cpx2} ${p.y}, ${p.x} ${p.y}`;
+                        }).join(' ');
+                        
+                        const areaPath = `${linePath} L ${width} ${height} L 0 ${height} Z`;
+                        
+                        return (
+                          <>
+                            {/* Area fill */}
+                            <path
+                              d={areaPath}
+                              fill="url(#areaGradient)"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                            {/* Line */}
+                            <path
+                              d={linePath}
+                              fill="none"
+                              stroke="#002d72"
+                              strokeWidth="2"
+                              vectorEffect="non-scaling-stroke"
+                            />
+                            {/* Data points */}
+                            {points.map((p, i) => (
+                              <circle
+                                key={i}
+                                cx={`${p.x}%`}
+                                cy={`${p.y}%`}
+                                r="4"
+                                fill="#002d72"
+                                className="cursor-pointer hover:r-6 transition-all"
+                              >
+                                <title>{data[i].count} conversations on {data[i].date}</title>
+                              </circle>
+                            ))}
+                          </>
+                        );
+                      })()}
+                    </svg>
+                  </div>
+                  
+                  {/* X-axis labels */}
+                  <div className="ml-10 flex justify-between mt-2 text-xs text-gray-400">
+                    {metrics.conversationsByDay.map((day, i) => (
+                      <span key={i}>{day.date.split('-')[2]}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="h-48 flex items-center justify-center text-gray-400">
+                  No conversation data available
+                </div>
+              )}
+            </div>
+
+            {/* User Satisfaction - Circular Gauge */}
+            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-semibold text-gray-900">User Satisfaction</h3>
+                <span className="text-sm text-gray-500">
+                  {metrics.conversationsByDay && metrics.conversationsByDay.length > 0 
+                    ? `${metrics.conversationsByDay[0]?.label} - ${metrics.conversationsByDay[metrics.conversationsByDay.length - 1]?.label}, 2026`
+                    : 'Last 7 days'}
+                </span>
+              </div>
+              
+              <div className="flex items-center gap-4 mb-4">
+                <label className="flex items-center gap-2 text-sm text-gray-500 cursor-pointer">
+                  <input type="checkbox" className="rounded border-gray-300" />
+                  Include &quot;No Feedback&quot;
+                </label>
+                <span className="text-sm text-gray-400 ml-auto">
+                  {metrics.noFeedback || 0} without feedback
+                </span>
+              </div>
+
+              <div className="flex items-center justify-center">
+                {/* Circular Gauge */}
+                <div className="relative">
+                  <svg width="200" height="120" viewBox="0 0 200 120">
+                    <defs>
+                      <linearGradient id="greenGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stopColor="#22c55e" />
+                        <stop offset="100%" stopColor="#16a34a" />
+                      </linearGradient>
+                    </defs>
+                    
+                    {/* Background arc (gray) */}
+                    <path
+                      d="M 20 100 A 80 80 0 0 1 180 100"
+                      fill="none"
+                      stroke="#e5e7eb"
+                      strokeWidth="16"
+                      strokeLinecap="round"
+                    />
+                    
+                    {/* Negative feedback arc (red) - small portion */}
+                    {metrics.negativeFeedback > 0 && (
+                      <path
+                        d={(() => {
+                          const total = (metrics.positiveFeedback || 0) + (metrics.negativeFeedback || 0);
+                          if (total === 0) return "";
+                          const negRatio = metrics.negativeFeedback / total;
+                          const negAngle = negRatio * 180;
+                          const startAngle = 180;
+                          const endAngle = 180 + negAngle;
+                          const startRad = (startAngle * Math.PI) / 180;
+                          const endRad = (endAngle * Math.PI) / 180;
+                          const x1 = 100 + 80 * Math.cos(startRad);
+                          const y1 = 100 + 80 * Math.sin(startRad);
+                          const x2 = 100 + 80 * Math.cos(endRad);
+                          const y2 = 100 + 80 * Math.sin(endRad);
+                          const largeArc = negAngle > 180 ? 1 : 0;
+                          return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
+                        })()}
+                        fill="none"
+                        stroke="#ef4444"
+                        strokeWidth="16"
+                        strokeLinecap="round"
+                      />
+                    )}
+                    
+                    {/* Positive feedback arc (green) */}
+                    {metrics.positiveFeedback > 0 && (
+                      <path
+                        d={(() => {
+                          const total = (metrics.positiveFeedback || 0) + (metrics.negativeFeedback || 0);
+                          if (total === 0) return "";
+                          const negRatio = metrics.negativeFeedback / total;
+                          const posRatio = metrics.positiveFeedback / total;
+                          const startAngle = 180 + (negRatio * 180);
+                          const endAngle = startAngle + (posRatio * 180);
+                          const startRad = (startAngle * Math.PI) / 180;
+                          const endRad = (endAngle * Math.PI) / 180;
+                          const x1 = 100 + 80 * Math.cos(startRad);
+                          const y1 = 100 + 80 * Math.sin(startRad);
+                          const x2 = 100 + 80 * Math.cos(endRad);
+                          const y2 = 100 + 80 * Math.sin(endRad);
+                          const largeArc = (posRatio * 180) > 180 ? 1 : 0;
+                          return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
+                        })()}
+                        fill="none"
+                        stroke="url(#greenGradient)"
+                        strokeWidth="16"
+                        strokeLinecap="round"
+                      />
+                    )}
+                  </svg>
+                </div>
+              </div>
+
+              {/* Legend */}
+              <div className="flex items-center justify-center gap-6 mt-4">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                  <span className="text-sm text-gray-600">{metrics.positiveFeedback || 0} positive</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-red-500"></span>
+                  <span className="text-sm text-gray-600">{metrics.negativeFeedback || 0} negative</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Daily Conversations Bar Chart */}
         {metrics?.conversationsByDay && metrics.conversationsByDay.length > 0 && (
           <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-            <h3 className="mb-4 text-lg font-semibold text-gray-900">Daily Conversations</h3>
-            <div className="h-64 flex items-end justify-between gap-2">
+            <h3 className="mb-6 text-lg font-semibold text-gray-900">Daily Conversations</h3>
+            <div className="flex items-end justify-between gap-4 h-56">
               {metrics.conversationsByDay.map((day, index) => {
-                const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count));
+                const maxCount = Math.max(...metrics.conversationsByDay.map(d => d.count), 1);
                 const height = maxCount > 0 ? (day.count / maxCount) * 100 : 0;
+                const hasData = day.count > 0;
                 
                 return (
-                  <div key={index} className="flex-1 flex flex-col items-center">
-                    <div className="w-full bg-gray-100 rounded-t relative" style={{ height: '200px' }}>
+                  <div key={index} className="flex-1 flex flex-col items-center h-full">
+                    {/* Bar container */}
+                    <div className="flex-1 w-full flex items-end justify-center">
                       <div 
-                        className="absolute bottom-0 w-full bg-[#002d72] rounded-t transition-all duration-300 hover:bg-[#1a4a8a]"
-                        style={{ height: `${height}%` }}
+                        className={`w-full max-w-[60px] rounded-lg transition-all duration-300 ${
+                          hasData 
+                            ? 'bg-[#002d72] hover:bg-[#1a4a8a] cursor-pointer' 
+                            : 'bg-gray-100'
+                        }`}
+                        style={{ height: hasData ? `${Math.max(height, 5)}%` : '100%' }}
                         title={`${day.count} conversations on ${day.date}`}
                       />
                     </div>
-                    <div className="mt-2 text-center">
-                      <p className="text-xs font-medium text-gray-900">{day.count}</p>
+                    {/* Labels */}
+                    <div className="mt-3 text-center">
+                      <p className={`text-sm font-semibold ${hasData ? 'text-gray-900' : 'text-gray-400'}`}>
+                        {day.count}
+                      </p>
                       <p className="text-xs text-gray-500">{day.label}</p>
                     </div>
                   </div>
