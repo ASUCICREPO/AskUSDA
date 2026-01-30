@@ -108,6 +108,7 @@ export default function AdminPage() {
   const [feedbackFilter, setFeedbackFilter] = useState<string>("all");
   const [selectedConversation, setSelectedConversation] = useState<FeedbackConversation | null>(null);
   const [selectedEscalation, setSelectedEscalation] = useState<EscalationRequest | null>(null);
+  const [includeNoFeedback, setIncludeNoFeedback] = useState(false);
   
   // Data states
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -539,7 +540,12 @@ export default function AdminPage() {
               
               <div className="flex items-center gap-4 mb-6">
                 <label className="flex items-center gap-2 text-sm text-slate-500 cursor-pointer">
-                  <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-[#4B7BF5] focus:ring-[#4B7BF5]" />
+                  <input 
+                    type="checkbox" 
+                    checked={includeNoFeedback}
+                    onChange={(e) => setIncludeNoFeedback(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-[#4B7BF5] focus:ring-[#4B7BF5]" 
+                  />
                   Include &quot;No Feedback&quot;
                 </label>
                 <span className="text-sm text-slate-400 ml-auto">
@@ -547,92 +553,133 @@ export default function AdminPage() {
                 </span>
               </div>
 
-              <div className="flex items-center justify-center py-4">
-                {/* Circular Gauge */}
-                <div className="relative">
-                  <svg width="200" height="120" viewBox="0 0 200 120">
-                    <defs>
-                      <linearGradient id="greenGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#22c55e" />
-                        <stop offset="100%" stopColor="#16a34a" />
-                      </linearGradient>
-                    </defs>
-                    
-                    {/* Background arc (gray) */}
-                    <path
-                      d="M 20 100 A 80 80 0 0 1 180 100"
-                      fill="none"
-                      stroke="#e2e8f0"
-                      strokeWidth="16"
-                      strokeLinecap="round"
-                    />
-                    
-                    {/* Negative feedback arc (red) */}
-                    {metrics.negativeFeedback > 0 && (
-                      <path
-                        d={(() => {
-                          const total = (metrics.positiveFeedback || 0) + (metrics.negativeFeedback || 0);
-                          if (total === 0) return "";
-                          const negRatio = metrics.negativeFeedback / total;
-                          const negAngle = negRatio * 180;
-                          const startAngle = 180;
-                          const endAngle = 180 + negAngle;
-                          const startRad = (startAngle * Math.PI) / 180;
-                          const endRad = (endAngle * Math.PI) / 180;
-                          const x1 = 100 + 80 * Math.cos(startRad);
-                          const y1 = 100 + 80 * Math.sin(startRad);
-                          const x2 = 100 + 80 * Math.cos(endRad);
-                          const y2 = 100 + 80 * Math.sin(endRad);
-                          const largeArc = negAngle > 180 ? 1 : 0;
-                          return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
-                        })()}
-                        fill="none"
-                        stroke="#ef4444"
-                        strokeWidth="16"
-                        strokeLinecap="round"
-                      />
-                    )}
-                    
-                    {/* Positive feedback arc (green) */}
-                    {metrics.positiveFeedback > 0 && (
-                      <path
-                        d={(() => {
-                          const total = (metrics.positiveFeedback || 0) + (metrics.negativeFeedback || 0);
-                          if (total === 0) return "";
-                          const negRatio = metrics.negativeFeedback / total;
-                          const posRatio = metrics.positiveFeedback / total;
-                          const startAngle = 180 + (negRatio * 180);
-                          const endAngle = startAngle + (posRatio * 180);
-                          const startRad = (startAngle * Math.PI) / 180;
-                          const endRad = (endAngle * Math.PI) / 180;
-                          const x1 = 100 + 80 * Math.cos(startRad);
-                          const y1 = 100 + 80 * Math.sin(startRad);
-                          const x2 = 100 + 80 * Math.cos(endRad);
-                          const y2 = 100 + 80 * Math.sin(endRad);
-                          const largeArc = (posRatio * 180) > 180 ? 1 : 0;
-                          return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
-                        })()}
-                        fill="none"
-                        stroke="url(#greenGradient)"
-                        strokeWidth="16"
-                        strokeLinecap="round"
-                      />
-                    )}
-                  </svg>
-                </div>
-              </div>
+              {(() => {
+                // Calculate totals based on checkbox state
+                const positive = metrics.positiveFeedback || 0;
+                const negative = metrics.negativeFeedback || 0;
+                const noFeedback = metrics.noFeedback || 0;
+                const total = includeNoFeedback 
+                  ? positive + negative + noFeedback 
+                  : positive + negative;
+                
+                return (
+                  <>
+                    <div className="flex items-center justify-center py-4">
+                      {/* Circular Gauge */}
+                      <div className="relative">
+                        <svg width="200" height="120" viewBox="0 0 200 120">
+                          <defs>
+                            <linearGradient id="greenGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                              <stop offset="0%" stopColor="#22c55e" />
+                              <stop offset="100%" stopColor="#16a34a" />
+                            </linearGradient>
+                          </defs>
+                          
+                          {/* Background arc (gray) */}
+                          <path
+                            d="M 20 100 A 80 80 0 0 1 180 100"
+                            fill="none"
+                            stroke="#e2e8f0"
+                            strokeWidth="16"
+                            strokeLinecap="round"
+                          />
+                          
+                          {/* Negative feedback arc (red) */}
+                          {negative > 0 && total > 0 && (
+                            <path
+                              d={(() => {
+                                const negRatio = negative / total;
+                                const negAngle = negRatio * 180;
+                                const startAngle = 180;
+                                const endAngle = 180 + negAngle;
+                                const startRad = (startAngle * Math.PI) / 180;
+                                const endRad = (endAngle * Math.PI) / 180;
+                                const x1 = 100 + 80 * Math.cos(startRad);
+                                const y1 = 100 + 80 * Math.sin(startRad);
+                                const x2 = 100 + 80 * Math.cos(endRad);
+                                const y2 = 100 + 80 * Math.sin(endRad);
+                                const largeArc = negAngle > 180 ? 1 : 0;
+                                return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
+                              })()}
+                              fill="none"
+                              stroke="#ef4444"
+                              strokeWidth="16"
+                              strokeLinecap="round"
+                            />
+                          )}
+                          
+                          {/* No feedback arc (gray) - only shown when checkbox is checked */}
+                          {includeNoFeedback && noFeedback > 0 && total > 0 && (
+                            <path
+                              d={(() => {
+                                const negRatio = negative / total;
+                                const noFeedbackRatio = noFeedback / total;
+                                const startAngle = 180 + (negRatio * 180);
+                                const endAngle = startAngle + (noFeedbackRatio * 180);
+                                const startRad = (startAngle * Math.PI) / 180;
+                                const endRad = (endAngle * Math.PI) / 180;
+                                const x1 = 100 + 80 * Math.cos(startRad);
+                                const y1 = 100 + 80 * Math.sin(startRad);
+                                const x2 = 100 + 80 * Math.cos(endRad);
+                                const y2 = 100 + 80 * Math.sin(endRad);
+                                const largeArc = (noFeedbackRatio * 180) > 180 ? 1 : 0;
+                                return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
+                              })()}
+                              fill="none"
+                              stroke="#94a3b8"
+                              strokeWidth="16"
+                              strokeLinecap="round"
+                            />
+                          )}
+                          
+                          {/* Positive feedback arc (green) */}
+                          {positive > 0 && total > 0 && (
+                            <path
+                              d={(() => {
+                                const negRatio = negative / total;
+                                const noFeedbackRatio = includeNoFeedback ? noFeedback / total : 0;
+                                const posRatio = positive / total;
+                                const startAngle = 180 + (negRatio * 180) + (noFeedbackRatio * 180);
+                                const endAngle = startAngle + (posRatio * 180);
+                                const startRad = (startAngle * Math.PI) / 180;
+                                const endRad = (endAngle * Math.PI) / 180;
+                                const x1 = 100 + 80 * Math.cos(startRad);
+                                const y1 = 100 + 80 * Math.sin(startRad);
+                                const x2 = 100 + 80 * Math.cos(endRad);
+                                const y2 = 100 + 80 * Math.sin(endRad);
+                                const largeArc = (posRatio * 180) > 180 ? 1 : 0;
+                                return `M ${x1} ${y1} A 80 80 0 ${largeArc} 1 ${x2} ${y2}`;
+                              })()}
+                              fill="none"
+                              stroke="url(#greenGradient)"
+                              strokeWidth="16"
+                              strokeLinecap="round"
+                            />
+                          )}
+                        </svg>
+                      </div>
+                    </div>
 
-              {/* Legend */}
-              <div className="flex items-center justify-center gap-8 mt-2">
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
-                  <span className="text-sm text-slate-600">{metrics.positiveFeedback || 0} positive</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-red-500"></span>
-                  <span className="text-sm text-slate-600">{metrics.negativeFeedback || 0} negative</span>
-                </div>
-              </div>
+                    {/* Legend */}
+                    <div className="flex items-center justify-center gap-6 mt-2 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                        <span className="text-sm text-slate-600">{positive} positive</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full bg-red-500"></span>
+                        <span className="text-sm text-slate-600">{negative} negative</span>
+                      </div>
+                      {includeNoFeedback && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-3 h-3 rounded-full bg-slate-400"></span>
+                          <span className="text-sm text-slate-600">{noFeedback} no feedback</span>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}
