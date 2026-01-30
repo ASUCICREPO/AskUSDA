@@ -115,25 +115,41 @@ async function queryKnowledgeBase(question, sessionId) {
     params.sessionId = sessionId;
   }
 
-  const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
-  const responseTimeMs = Date.now() - startTime;
+  try {
+    const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
+    const responseTimeMs = Date.now() - startTime;
 
-  // Extract citations
-  const citations = response.citations?.map((citation, index) => ({
-    id: index + 1,
-    text: citation.generatedResponsePart?.textResponsePart?.text || '',
-    source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
-            citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
-            'Unknown source',
-    score: citation.retrievedReferences?.[0]?.score || 0,
-  })) || [];
+    console.log('Knowledge Base response received:', {
+      hasOutput: !!response.output?.text,
+      citationsCount: response.citations?.length || 0,
+      responseTimeMs,
+    });
 
-  return {
-    answer: response.output?.text || "I couldn't find relevant information. Please try rephrasing your question.",
-    citations,
-    sessionId: response.sessionId,
-    responseTimeMs,
-  };
+    // Extract citations
+    const citations = response.citations?.map((citation, index) => ({
+      id: index + 1,
+      text: citation.generatedResponsePart?.textResponsePart?.text || '',
+      source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
+              citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
+              'Unknown source',
+      score: citation.retrievedReferences?.[0]?.score || 0,
+    })) || [];
+
+    return {
+      answer: response.output?.text || "I couldn't find relevant information about that topic. Please try asking about USDA programs, farm loans, conservation, or other agricultural services.",
+      citations,
+      sessionId: response.sessionId,
+      responseTimeMs,
+    };
+  } catch (error) {
+    console.error('Knowledge Base query error:', {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: error.$metadata?.httpStatusCode,
+      knowledgeBaseId: KNOWLEDGE_BASE_ID,
+    });
+    throw error;
+  }
 }
 
 // Save escalation request

@@ -74,6 +74,23 @@ export default function ChatBot() {
   const currentStreamingMessageRef = useRef<string>("");
   const streamingMessageIdRef = useRef<string | null>(null);
 
+  // Reset chat to initial state
+  const resetChat = useCallback(() => {
+    setMessages([
+      {
+        id: "1",
+        text: "Welcome to AskUSDA! I'm here to help you find information about USDA programs and services. How can I assist you today?",
+        sender: "bot",
+        timestamp: new Date(),
+      },
+    ]);
+    setSessionId("");
+    setInputValue("");
+    currentStreamingMessageRef.current = "";
+    streamingMessageIdRef.current = null;
+    setIsTyping(false);
+  }, []);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -466,7 +483,11 @@ export default function ChatBot() {
         <div className="fixed bottom-6 right-6 z-50 flex h-[520px] w-[380px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between bg-[#002d72] px-4 py-3">
-            <div className="flex items-center gap-3">
+            <button
+              onClick={resetChat}
+              className="flex items-center gap-3 rounded-lg transition-opacity hover:opacity-80"
+              title="Start new conversation"
+            >
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white p-1">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -475,7 +496,7 @@ export default function ChatBot() {
                   className="h-full w-full"
                 />
               </div>
-              <div>
+              <div className="text-left">
                 <h3 className="font-semibold text-white">AskUSDA</h3>
                 <p className="text-xs text-white/80">
                   {isConnecting
@@ -485,7 +506,7 @@ export default function ChatBot() {
                       : "Demo Mode"}
                 </p>
               </div>
-            </div>
+            </button>
             <div className="flex items-center gap-2">
               {/* Support/Email button */}
               <button
