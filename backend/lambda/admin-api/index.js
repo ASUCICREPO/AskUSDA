@@ -171,16 +171,36 @@ async function getFeedbackConversations(limit = 50, feedbackFilter = null) {
   }
 
   return {
-    conversations: conversations.map(conv => ({
-      conversationId: conv.conversationId,
-      sessionId: conv.sessionId,
-      question: conv.question,
-      answerPreview: conv.answerPreview || conv.answer?.substring(0, 500),
-      feedback: conv.feedback || null,
-      timestamp: conv.timestamp,
-      date: conv.date,
-      responseTimeMs: conv.responseTimeMs,
-    })),
+    conversations: conversations.map(conv => {
+      // Parse citations from JSON string
+      let citations = [];
+      try {
+        citations = conv.citations ? JSON.parse(conv.citations) : [];
+      } catch (e) {
+        citations = [];
+      }
+      
+      // Calculate confidence score based on citation scores (industry standard approach)
+      // Average the top citation scores, normalized to 0-100
+      let confidenceScore = 0;
+      if (citations.length > 0) {
+        const avgScore = citations.reduce((sum, c) => sum + (c.score || 0), 0) / citations.length;
+        confidenceScore = Math.round(avgScore * 100);
+      }
+      
+      return {
+        conversationId: conv.conversationId,
+        sessionId: conv.sessionId,
+        question: conv.question,
+        answerPreview: conv.answerPreview || conv.answer?.substring(0, 500),
+        feedback: conv.feedback || null,
+        timestamp: conv.timestamp,
+        date: conv.date,
+        responseTimeMs: conv.responseTimeMs,
+        citations: citations,
+        confidenceScore: confidenceScore,
+      };
+    }),
   };
 }
 
