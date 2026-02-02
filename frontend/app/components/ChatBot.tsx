@@ -49,37 +49,6 @@ const suggestedQuestions = [
   "Find local USDA service centers",
 ];
 
-// Helper to extract a clean title from URL
-const getSourceTitle = (url: string): string => {
-  try {
-    const urlObj = new URL(url);
-    // Get the pathname and extract the last meaningful segment
-    const pathname = urlObj.pathname;
-    const segments = pathname.split('/').filter(s => s.length > 0);
-    
-    if (segments.length > 0) {
-      // Get the last segment and clean it up
-      let title = segments[segments.length - 1];
-      // Remove file extensions
-      title = title.replace(/\.(html|htm|php|aspx)$/i, '');
-      // Replace hyphens and underscores with spaces
-      title = title.replace(/[-_]/g, ' ');
-      // Capitalize first letter of each word
-      title = title.split(' ').map(word => 
-        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-      ).join(' ');
-      // Truncate if too long
-      if (title.length > 40) {
-        title = title.substring(0, 37) + '...';
-      }
-      return title || urlObj.hostname;
-    }
-    return urlObj.hostname;
-  } catch {
-    return 'Source';
-  }
-};
-
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "";
 
 export default function ChatBot() {
@@ -685,28 +654,45 @@ export default function ChatBot() {
                     </div>
                     {/* Citations */}
                     {message.citations && message.citations.length > 0 && (
-                      <div className="mt-3 border-t border-gray-200 pt-2">
-                        <p className="mb-1 text-xs font-medium text-gray-500">
+                      <div className="mt-3 border-t border-gray-200 pt-3">
+                        <p className="mb-2 text-sm font-semibold text-gray-700">
                           Sources:
                         </p>
-                        <div className="space-y-1">
-                          {message.citations.slice(0, 3).map((citation) => (
-                            <div key={citation.id} className="flex items-center gap-2">
-                              <a
-                                href={citation.source}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-[#002d72] hover:underline"
-                                title={citation.source}
-                              >
-                                {getSourceTitle(citation.source)}
-                              </a>
-                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">
-                                {Math.round(citation.score * 100)}% match
-                              </span>
-                            </div>
+                        <div className="space-y-2">
+                          {message.citations.slice(0, 3).map((citation, index) => (
+                            <a
+                              key={citation.id}
+                              href={citation.source}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block text-[#1a5fb4] hover:underline"
+                            >
+                              <span className="inline-block mr-1.5">↗</span>
+                              <span className="text-sm font-medium">Source {index + 1}</span>
+                            </a>
                           ))}
                         </div>
+
+                        {/* Horizontal divider */}
+                        <hr className="my-3 border-gray-200" />
+
+                        {/* Confidence indicator */}
+                        {(() => {
+                          const maxScore = Math.max(...message.citations.map(c => c.score || 0));
+                          const isHigh = maxScore >= 0.5;
+                          return (
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-semibold text-gray-700">Confidence:</span>
+                              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                isHigh
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-red-100 text-red-700'
+                              }`}>
+                                {isHigh ? 'High Confidence' : 'Low Confidence'}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                     {/* Feedback Buttons - only for bot messages with conversationId, not welcome message, not while streaming */}

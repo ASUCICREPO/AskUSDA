@@ -1027,46 +1027,41 @@ export default function AdminPage() {
                     {selectedConversation.citations && selectedConversation.citations.length > 0 && (
                       <div className="mt-4 border-t border-gray-200 pt-3">
                         <p className="mb-2 text-sm font-semibold text-gray-700">Sources:</p>
-                        <div className="space-y-1.5">
-                          {selectedConversation.citations.slice(0, 3).map((citation) => (
+                        <div className="space-y-2">
+                          {selectedConversation.citations.slice(0, 3).map((citation, index) => (
                             <a
                               key={citation.id}
                               href={citation.source}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="flex items-center gap-2 text-sm text-[#002d72] hover:underline"
+                              className="block text-[#1a5fb4] hover:underline"
                             >
-                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
-                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                <polyline points="15 3 21 3 21 9" />
-                                <line x1="10" y1="14" x2="21" y2="3" />
-                              </svg>
-                              <span className="truncate">{citation.text || citation.source}</span>
+                              <span className="inline-block mr-1.5">↗</span>
+                              <span className="text-sm font-medium">Source {index + 1}</span>
                             </a>
                           ))}
                         </div>
-                      </div>
-                    )}
-                    
-                    {/* Confidence Score */}
-                    {selectedConversation.confidenceScore !== undefined && (
-                      <div className="mt-4 border-t border-gray-200 pt-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-gray-600">Confidence:</span>
-                          <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-sm font-medium ${
-                            selectedConversation.confidenceScore >= 70 
-                              ? 'bg-green-100 text-green-800' 
-                              : selectedConversation.confidenceScore >= 40 
-                                ? 'bg-yellow-100 text-yellow-800' 
-                                : 'bg-red-100 text-red-800'
-                          }`}>
-                            {selectedConversation.confidenceScore >= 70 
-                              ? 'High Confidence' 
-                              : selectedConversation.confidenceScore >= 40 
-                                ? 'Medium Confidence' 
-                                : 'Low Confidence'}
-                          </span>
-                        </div>
+
+                        {/* Horizontal divider */}
+                        <hr className="my-3 border-gray-200" />
+
+                        {/* Confidence indicator */}
+                        {(() => {
+                          const maxScore = Math.max(...selectedConversation.citations.map(c => c.score || 0));
+                          const isHigh = maxScore >= 0.5;
+                          return (
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-semibold text-gray-700">Confidence:</span>
+                              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                isHigh
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-red-100 text-red-700'
+                              }`}>
+                                {isHigh ? 'High Confidence' : 'Low Confidence'}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                     
