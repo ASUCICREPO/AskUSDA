@@ -661,7 +661,7 @@ export default function ChatBot() {
               </div>
             </button>
             <div className="flex items-center gap-2">
-              {/* Support/Email button */}
+              {/* Support button */}
               <button
                 onClick={() => setShowSupportModal(true)}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/20 hover:text-white"
@@ -679,8 +679,8 @@ export default function ChatBot() {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  <rect x="2" y="4" width="20" height="16" rx="2" />
-                  <path d="m22 7-10 5L2 7" />
+                  <path d="M3 11h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5Zm0 0a9 9 0 1 1 18 0m0 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3Z" />
+                  <path d="M21 16v2a4 4 0 0 1-4 4h-5" />
                 </svg>
               </button>
               {/* Connection status indicator */}
