@@ -953,14 +953,14 @@ export default function AdminPage() {
               <div className="space-y-4">
                 {/* Question */}
                 <div className="flex justify-end">
-                  <div className="max-w-[85%] overflow-hidden rounded-2xl bg-[#002d72] text-white px-4 py-3">
-                    <p className="text-sm leading-relaxed">{selectedConversation.question}</p>
+                  <div className="max-w-full rounded-2xl bg-[#002d72] text-white px-4 py-3">
+                    <p className="text-sm leading-relaxed break-words">{selectedConversation.question}</p>
                   </div>
                 </div>
-                
+
                 {/* Answer */}
                 <div className="flex justify-start">
-                  <div className="max-w-[85%] overflow-hidden rounded-2xl bg-white text-gray-800 shadow-sm px-4 py-3">
+                  <div className="w-full rounded-2xl bg-white text-gray-800 shadow-sm px-4 py-3">
                     <div className="prose prose-sm max-w-none overflow-wrap-anywhere prose-gray prose-a:text-[#002d72]">
                       <ReactMarkdown
                         components={{
