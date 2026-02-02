@@ -659,16 +659,21 @@ export default function ChatBot() {
                           Sources:
                         </p>
                         <div className="space-y-1">
-                          {message.citations.slice(0, 3).map((citation) => (
-                            <a
-                              key={citation.id}
-                              href={citation.source}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block truncate text-xs text-[#002d72] hover:underline"
-                            >
-                              {citation.source}
-                            </a>
+                          {message.citations.slice(0, 3).map((citation, index) => (
+                            <div key={citation.id} className="flex items-center gap-2">
+                              <a
+                                href={citation.source}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-[#002d72] hover:underline"
+                                title={citation.source}
+                              >
+                                Source {index + 1}
+                              </a>
+                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">
+                                {Math.round(citation.score * 100)}% match
+                              </span>
+                            </div>
                           ))}
                         </div>
                       </div>
