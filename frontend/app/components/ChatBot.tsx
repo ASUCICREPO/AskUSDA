@@ -49,6 +49,37 @@ const suggestedQuestions = [
   "Find local USDA service centers",
 ];
 
+// Helper to extract a clean title from URL
+const getSourceTitle = (url: string): string => {
+  try {
+    const urlObj = new URL(url);
+    // Get the pathname and extract the last meaningful segment
+    const pathname = urlObj.pathname;
+    const segments = pathname.split('/').filter(s => s.length > 0);
+    
+    if (segments.length > 0) {
+      // Get the last segment and clean it up
+      let title = segments[segments.length - 1];
+      // Remove file extensions
+      title = title.replace(/\.(html|htm|php|aspx)$/i, '');
+      // Replace hyphens and underscores with spaces
+      title = title.replace(/[-_]/g, ' ');
+      // Capitalize first letter of each word
+      title = title.split(' ').map(word => 
+        word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+      ).join(' ');
+      // Truncate if too long
+      if (title.length > 40) {
+        title = title.substring(0, 37) + '...';
+      }
+      return title || urlObj.hostname;
+    }
+    return urlObj.hostname;
+  } catch {
+    return 'Source';
+  }
+};
+
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "";
 
 export default function ChatBot() {
@@ -659,7 +690,7 @@ export default function ChatBot() {
                           Sources:
                         </p>
                         <div className="space-y-1">
-                          {message.citations.slice(0, 3).map((citation, index) => (
+                          {message.citations.slice(0, 3).map((citation) => (
                             <div key={citation.id} className="flex items-center gap-2">
                               <a
                                 href={citation.source}
@@ -668,7 +699,7 @@ export default function ChatBot() {
                                 className="text-xs text-[#002d72] hover:underline"
                                 title={citation.source}
                               >
-                                Source {index + 1}
+                                {getSourceTitle(citation.source)}
                               </a>
                               <span className="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-700">
                                 {Math.round(citation.score * 100)}% match
