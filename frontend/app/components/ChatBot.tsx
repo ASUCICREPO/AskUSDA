@@ -3,6 +3,41 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 
+// Type declarations for Web Speech API
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+  message: string;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
+
+interface SpeechRecognitionConstructor {
+  new (): SpeechRecognition;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition: SpeechRecognitionConstructor;
+    webkitSpeechRecognition: SpeechRecognitionConstructor;
+  }
+}
+
 interface Citation {
   id: number;
   text: string;
@@ -73,6 +108,16 @@ export default function ChatBot() {
   const wsRef = useRef<WebSocket | null>(null);
   const currentStreamingMessageRef = useRef<string>("");
   const streamingMessageIdRef = useRef<string | null>(null);
+  
+  // Speech-to-text state
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  
+  // Text-to-speech state
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [ttsSupported, setTtsSupported] = useState(false);
+  const speechSynthRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Reset chat to initial state
   const resetChat = useCallback(() => {
@@ -89,7 +134,115 @@ export default function ChatBot() {
     currentStreamingMessageRef.current = "";
     streamingMessageIdRef.current = null;
     setIsTyping(false);
+    // Stop any ongoing speech
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingMessageId(null);
   }, []);
+
+  // Initialize speech recognition (speech-to-text)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognitionAPI) {
+        setSpeechSupported(true);
+        const recognition = new SpeechRecognitionAPI();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = "en-US";
+        
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+          const transcript = event.results[0][0].transcript;
+          setInputValue(transcript);
+          setIsListening(false);
+        };
+        
+        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+          console.error("Speech recognition error:", event.error);
+          setIsListening(false);
+        };
+        
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+        
+        recognitionRef.current = recognition;
+      }
+      
+      // Check for text-to-speech support
+      if (window.speechSynthesis) {
+        setTtsSupported(true);
+      }
+    }
+    
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+
+  // Toggle speech recognition
+  const toggleListening = useCallback(() => {
+    if (!recognitionRef.current) return;
+    
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (error) {
+        console.error("Failed to start speech recognition:", error);
+      }
+    }
+  }, [isListening]);
+
+  // Text-to-speech function
+  const speakMessage = useCallback((messageId: string, text: string) => {
+    if (!window.speechSynthesis) return;
+    
+    // If already speaking this message, stop it
+    if (speakingMessageId === messageId) {
+      window.speechSynthesis.cancel();
+      setSpeakingMessageId(null);
+      return;
+    }
+    
+    // Stop any current speech
+    window.speechSynthesis.cancel();
+    
+    // Clean the text (remove markdown formatting)
+    const cleanText = text
+      .replace(/\*\*(.*?)\*\*/g, "$1") // Remove bold
+      .replace(/\*(.*?)\*/g, "$1") // Remove italic
+      .replace(/\[(.*?)\]\(.*?\)/g, "$1") // Remove links, keep text
+      .replace(/#{1,6}\s/g, "") // Remove headers
+      .replace(/`(.*?)`/g, "$1") // Remove code formatting
+      .replace(/\n+/g, ". "); // Replace newlines with periods
+    
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = "en-US";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    
+    utterance.onend = () => {
+      setSpeakingMessageId(null);
+    };
+    
+    utterance.onerror = () => {
+      setSpeakingMessageId(null);
+    };
+    
+    speechSynthRef.current = utterance;
+    setSpeakingMessageId(messageId);
+    window.speechSynthesis.speak(utterance);
+  }, [speakingMessageId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -698,54 +851,171 @@ export default function ChatBot() {
                     {/* Feedback Buttons - only for bot messages with conversationId, not welcome message, not while streaming */}
                     {message.sender === "bot" && message.id !== "1" && !message.isStreaming && message.conversationId && (
                       <div className="mt-3 border-t border-gray-200 pt-2">
-                        {message.feedback ? (
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500">
-                              Thanks for your feedback!
-                            </span>
-                            {message.feedback === "positive" ? (
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="14"
-                                height="14"
-                                viewBox="0 0 24 24"
-                                fill="#22c55e"
-                                stroke="#22c55e"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
-                              </svg>
-                            ) : (
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="14"
-                                height="14"
-                                viewBox="0 0 24 24"
-                                fill="#ef4444"
-                                stroke="#ef4444"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
-                              </svg>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1">
-                            <span className="mr-2 text-xs text-gray-400">Was this helpful?</span>
+                        <div className="flex items-center justify-between">
+                          {/* Text-to-speech button */}
+                          {ttsSupported && (
                             <button
-                              onClick={() => handleFeedback(message.id, "positive")}
-                              className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-green-50 hover:text-green-600 active:scale-95"
-                              aria-label="Thumbs up"
-                              title="Yes, this was helpful"
+                              onClick={() => speakMessage(message.id, message.text)}
+                              className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-all ${
+                                speakingMessageId === message.id
+                                  ? "bg-[#002d72] text-white"
+                                  : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                              }`}
+                              aria-label={speakingMessageId === message.id ? "Stop speaking" : "Listen to response"}
+                              title={speakingMessageId === message.id ? "Click to stop" : "Listen to this response"}
                             >
+                              {speakingMessageId === message.id ? (
+                                <>
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                  >
+                                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                                  </svg>
+                                  <span>Stop</span>
+                                </>
+                              ) : (
+                                <>
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  >
+                                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                                  </svg>
+                                  <span>Listen</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                          
+                          {/* Feedback section */}
+                          {message.feedback ? (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-gray-500">
+                                Thanks for your feedback!
+                              </span>
+                              {message.feedback === "positive" ? (
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="14"
+                                  height="14"
+                                  viewBox="0 0 24 24"
+                                  fill="#22c55e"
+                                  stroke="#22c55e"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+                                </svg>
+                              ) : (
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="14"
+                                  height="14"
+                                  viewBox="0 0 24 24"
+                                  fill="#ef4444"
+                                  stroke="#ef4444"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+                                </svg>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <span className="mr-2 text-xs text-gray-400">Was this helpful?</span>
+                              <button
+                                onClick={() => handleFeedback(message.id, "positive")}
+                                className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-green-50 hover:text-green-600 active:scale-95"
+                                aria-label="Thumbs up"
+                                title="Yes, this was helpful"
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="16"
+                                  height="16"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+                                </svg>
+                              </button>
+                              <button
+                                onClick={() => handleFeedback(message.id, "negative")}
+                                className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-red-50 hover:text-red-600 active:scale-95"
+                                aria-label="Thumbs down"
+                                title="No, this wasn't helpful"
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="16"
+                                  height="16"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {/* Speaker button for bot messages without conversationId (like welcome message or demo mode) */}
+                    {message.sender === "bot" && !message.isStreaming && !message.conversationId && ttsSupported && (
+                      <div className="mt-3 border-t border-gray-200 pt-2">
+                        <button
+                          onClick={() => speakMessage(message.id, message.text)}
+                          className={`flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-all ${
+                            speakingMessageId === message.id
+                              ? "bg-[#002d72] text-white"
+                              : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                          }`}
+                          aria-label={speakingMessageId === message.id ? "Stop speaking" : "Listen to response"}
+                          title={speakingMessageId === message.id ? "Click to stop" : "Listen to this response"}
+                        >
+                          {speakingMessageId === message.id ? (
+                            <>
                               <svg
                                 xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                              >
+                                <rect x="6" y="6" width="12" height="12" rx="2" />
+                              </svg>
+                              <span>Stop</span>
+                            </>
+                          ) : (
+                            <>
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
                                 viewBox="0 0 24 24"
                                 fill="none"
                                 stroke="currentColor"
@@ -753,31 +1023,14 @@ export default function ChatBot() {
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                               >
-                                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
                               </svg>
-                            </button>
-                            <button
-                              onClick={() => handleFeedback(message.id, "negative")}
-                              className="rounded-lg p-1.5 text-gray-400 transition-all hover:bg-red-50 hover:text-red-600 active:scale-95"
-                              aria-label="Thumbs down"
-                              title="No, this wasn't helpful"
-                            >
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              >
-                                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17" />
-                              </svg>
-                            </button>
-                          </div>
-                        )}
+                              <span>Listen</span>
+                            </>
+                          )}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -832,13 +1085,57 @@ export default function ChatBot() {
           {/* Input Area */}
           <div className="border-t border-gray-200 bg-white p-4">
             <div className="flex items-center gap-2">
+              {/* Microphone button for speech-to-text */}
+              {speechSupported && (
+                <button
+                  onClick={toggleListening}
+                  disabled={isTyping}
+                  className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
+                    isListening
+                      ? "bg-red-500 text-white animate-pulse"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                  aria-label={isListening ? "Stop listening" : "Start voice input"}
+                  title={isListening ? "Stop listening" : "Click to speak your question"}
+                >
+                  {isListening ? (
+                    // Stop icon when listening
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                    >
+                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                    </svg>
+                  ) : (
+                    // Microphone icon
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                      <line x1="12" x2="12" y1="19" y2="22" />
+                    </svg>
+                  )}
+                </button>
+              )}
               <input
                 ref={inputRef}
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type your question..."
+                placeholder={isListening ? "Listening..." : "Type your question..."}
                 disabled={isTyping}
                 className="flex-1 rounded-full border border-gray-300 px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 outline-none transition-colors focus:border-[#002d72] focus:ring-2 focus:ring-[#002d72]/20 disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
@@ -864,6 +1161,11 @@ export default function ChatBot() {
                 </svg>
               </button>
             </div>
+            {isListening && (
+              <p className="mt-2 text-center text-xs text-red-500 animate-pulse">
+                🎤 Listening... Speak now
+              </p>
+            )}
           </div>
         </div>
       )}
