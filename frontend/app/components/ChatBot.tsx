@@ -75,6 +75,8 @@ interface WebSocketMessage {
   success?: boolean;
   escalationId?: string;
   question?: string; // The original question (echoed back from server)
+  maxConfidence?: number; // Maximum confidence score from retrieval
+  lowConfidence?: boolean; // Flag indicating if response was low confidence
 }
 
 const suggestedQuestions = [
