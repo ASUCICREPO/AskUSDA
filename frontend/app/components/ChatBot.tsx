@@ -327,6 +327,25 @@ export default function ChatBot() {
         break;
 
       case "message":
+        // Log confidence scores to Chrome console for debugging
+        console.log('=== CONFIDENCE SCORE CHECK ===');
+        console.log('Citations received:', data.citations);
+        if (data.citations && data.citations.length > 0) {
+          const scores = data.citations.map((c: Citation) => c.score || 0);
+          const maxScore = Math.max(...scores);
+          console.log('Individual citation scores:', data.citations.map((c: Citation, i: number) => ({
+            citation: i + 1,
+            score: c.score,
+            source: c.source
+          })));
+          console.log('Maximum confidence score:', maxScore);
+          console.log('Threshold: 0.8');
+          console.log('Is high confidence (>= 0.8)?:', maxScore >= 0.8);
+        } else {
+          console.log('No citations - confidence score: 0');
+        }
+        console.log('=== END CONFIDENCE CHECK ===');
+
         // Complete message with all data
         const messageId = streamingMessageIdRef.current || Date.now().toString();
         setMessages((prev) => {

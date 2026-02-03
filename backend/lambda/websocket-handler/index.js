@@ -273,7 +273,20 @@ async function handleSendMessage(connectionId, body) {
       ? Math.max(...result.citations.map(c => c.score || 0)) 
       : 0;
     
-    console.log('Confidence check:', { maxConfidence, threshold: 0.8, isHighConfidence: maxConfidence >= 0.8 });
+    // Detailed confidence logging for manual verification
+    console.log('=== CONFIDENCE SCORE CHECK ===');
+    console.log('User Question:', message);
+    console.log('Number of citations:', result.citations.length);
+    console.log('Individual citation scores:', result.citations.map((c, i) => ({
+      citation: i + 1,
+      score: c.score,
+      source: c.source?.substring(0, 80) + '...'
+    })));
+    console.log('Maximum confidence score:', maxConfidence);
+    console.log('Threshold:', 0.8);
+    console.log('Is high confidence (>= 0.8)?:', maxConfidence >= 0.8);
+    console.log('Decision:', maxConfidence >= 0.8 ? 'SHOW RESPONSE' : 'SHOW LOW CONFIDENCE MESSAGE');
+    console.log('=== END CONFIDENCE CHECK ===');
 
     if (maxConfidence < 0.8) {
       // Low confidence - suggest user to visit usda.gov or contact support
