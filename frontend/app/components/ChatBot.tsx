@@ -86,6 +86,73 @@ const suggestedQuestions = [
   "Find local USDA service centers",
 ];
 
+// Generate a smart, concise title from a URL
+function generateSourceTitle(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.replace(/^www\./, '');
+    const pathSegments = urlObj.pathname
+      .split('/')
+      .filter(segment => segment && segment.length > 0);
+    
+    // Map common USDA domains to friendly names
+    const domainMap: Record<string, string> = {
+      'usda.gov': 'USDA',
+      'fsa.usda.gov': 'Farm Service Agency',
+      'nrcs.usda.gov': 'Natural Resources Conservation',
+      'fns.usda.gov': 'Food & Nutrition Service',
+      'ams.usda.gov': 'Agricultural Marketing Service',
+      'aphis.usda.gov': 'Animal & Plant Health',
+      'ers.usda.gov': 'Economic Research Service',
+      'fas.usda.gov': 'Foreign Agricultural Service',
+      'fs.usda.gov': 'Forest Service',
+      'rd.usda.gov': 'Rural Development',
+      'rma.usda.gov': 'Risk Management Agency',
+      'farmers.gov': 'Farmers.gov',
+      'nutrition.gov': 'Nutrition.gov',
+      'choosemyplate.gov': 'MyPlate',
+      'foodsafety.gov': 'Food Safety',
+    };
+    
+    // Get the friendly domain name
+    const domainName = domainMap[hostname] || 
+      hostname.split('.')[0].charAt(0).toUpperCase() + hostname.split('.')[0].slice(1);
+    
+    // If there are path segments, try to create a meaningful title
+    if (pathSegments.length > 0) {
+      // Get the last meaningful segment (often the page name)
+      let lastSegment = pathSegments[pathSegments.length - 1];
+      
+      // Remove file extensions
+      lastSegment = lastSegment.replace(/\.(html?|php|aspx?|jsp)$/i, '');
+      
+      // Skip generic segments
+      const genericSegments = ['index', 'home', 'main', 'default', 'page'];
+      if (genericSegments.includes(lastSegment.toLowerCase())) {
+        lastSegment = pathSegments.length > 1 ? pathSegments[pathSegments.length - 2] : '';
+      }
+      
+      if (lastSegment) {
+        // Convert kebab-case or snake_case to Title Case
+        const title = lastSegment
+          .replace(/[-_]/g, ' ')
+          .replace(/([a-z])([A-Z])/g, '$1 $2') // camelCase to spaces
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ')
+          .substring(0, 40); // Limit length
+        
+        return `${domainName}: ${title}`;
+      }
+    }
+    
+    return domainName;
+  } catch {
+    // If URL parsing fails, return a generic title
+    return 'USDA Resource';
+  }
+}
+
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || "";
 
 export default function ChatBot() {
@@ -831,16 +898,17 @@ export default function ChatBot() {
                           Sources:
                         </p>
                         <div className="space-y-2">
-                          {message.citations.slice(0, 3).map((citation, index) => (
+                          {message.citations.slice(0, 3).map((citation) => (
                             <a
                               key={citation.id}
                               href={citation.source}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="block text-[#1a5fb4] hover:underline"
+                              title={citation.source}
                             >
                               <span className="inline-block mr-1.5">↗</span>
-                              <span className="text-sm font-medium">Source {index + 1}</span>
+                              <span className="text-sm font-medium">{generateSourceTitle(citation.source)}</span>
                             </a>
                           ))}
                         </div>
