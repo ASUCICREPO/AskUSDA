@@ -160,8 +160,9 @@ Answer:`;
 
   console.log('Prompt length:', prompt.length);
 
-  // Use Amazon Nova Pro model
-  const modelId = 'amazon.nova-pro-v1:0';
+  // Use Amazon Nova Pro via inference profile
+  const region = process.env.AWS_REGION || 'us-west-2';
+  const modelId = `us.amazon.nova-pro-v1:0`;
   
   const requestBody = {
     messages: [
@@ -176,6 +177,8 @@ Answer:`;
       topP: 0.9,
     },
   };
+
+  console.log('Using model ID:', modelId);
 
   try {
     const response = await bedrockRuntimeClient.send(new InvokeModelCommand({
@@ -222,7 +225,7 @@ async function queryKnowledgeBase(question, sessionId) {
   console.log('========================');
 
   // If confidence is too low, don't generate - return early
-  if (maxConfidence < 0.8) {
+  if (maxConfidence < 0.3) {
     const responseTimeMs = Date.now() - startTime;
     return {
       answer: null,
