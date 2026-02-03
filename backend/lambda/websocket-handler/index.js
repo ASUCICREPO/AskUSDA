@@ -125,15 +125,70 @@ async function queryKnowledgeBase(question, sessionId) {
       responseTimeMs,
     });
 
-    // Extract citations
-    const citations = response.citations?.map((citation, index) => ({
-      id: index + 1,
-      text: citation.generatedResponsePart?.textResponsePart?.text || '',
-      source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
-              citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
-              'Unknown source',
-      score: citation.retrievedReferences?.[0]?.score || 0,
-    })) || [];
+    // Detailed logging for confidence score debugging
+    console.log('=== CONFIDENCE SCORE DEBUG START ===');
+    console.log('Full citations array:', JSON.stringify(response.citations, null, 2));
+    
+    if (response.citations && response.citations.length > 0) {
+      response.citations.forEach((citation, citationIndex) => {
+        console.log(`Citation ${citationIndex}:`, {
+          generatedResponsePartText: citation.generatedResponsePart?.textResponsePart?.text?.substring(0, 100) + '...',
+          retrievedReferencesCount: citation.retrievedReferences?.length || 0,
+        });
+        
+        if (citation.retrievedReferences && citation.retrievedReferences.length > 0) {
+          citation.retrievedReferences.forEach((ref, refIndex) => {
+            console.log(`  Reference ${refIndex}:`, {
+              score: ref.score,
+              scoreType: typeof ref.score,
+              hasLocation: !!ref.location,
+              locationType: ref.location?.type,
+              s3Uri: ref.location?.s3Location?.uri,
+              webUrl: ref.location?.webLocation?.url,
+              // Log the entire reference object to see all available fields
+              fullReference: JSON.stringify(ref, null, 2),
+            });
+          });
+        } else {
+          console.log('  No retrieved references for this citation');
+        }
+      });
+    } else {
+      console.log('No citations in response');
+    }
+    console.log('=== CONFIDENCE SCORE DEBUG END ===');
+
+    // Extract citations - collect ALL scores from all references for better confidence calculation
+    const citations = response.citations?.map((citation, index) => {
+      // Get all scores from all retrieved references for this citation
+      const allScores = citation.retrievedReferences?.map(ref => ref.score).filter(s => s !== undefined) || [];
+      const maxScoreForCitation = allScores.length > 0 ? Math.max(...allScores) : 0;
+      
+      console.log(`Citation ${index} scores:`, {
+        allScores,
+        maxScoreForCitation,
+        firstRefScore: citation.retrievedReferences?.[0]?.score,
+      });
+      
+      return {
+        id: index + 1,
+        text: citation.generatedResponsePart?.textResponsePart?.text || '',
+        source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
+                citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
+                'Unknown source',
+        score: maxScoreForCitation, // Use max score from all references
+      };
+    }) || [];
+    
+    // Log final extracted citations with scores
+    console.log('Final extracted citations with scores:', citations.map(c => ({
+      id: c.id,
+      score: c.score,
+      source: c.source.substring(0, 50) + '...',
+    })));
+    
+    const overallMaxScore = citations.length > 0 ? Math.max(...citations.map(c => c.score)) : 0;
+    console.log('Overall max confidence score:', overallMaxScore, 'Threshold for high confidence: 0.5');
 
     return {
       answer: response.output?.text || "I couldn't find relevant information about that topic. Please try asking about USDA programs, farm loans, conservation, or other agricultural services.",
@@ -213,17 +268,38 @@ async function handleSendMessage(connectionId, body) {
     // Generate conversation ID (but don't save yet - only save when feedback is given)
     const conversationId = uuidv4();
 
-    // Send response to client (include question/answer data for potential feedback submission)
-    await sendToClient(connectionId, {
-      type: 'message',
-      message: result.answer,
-      citations: result.citations,
-      conversationId,
-      sessionId: result.sessionId,
-      responseTimeMs: result.responseTimeMs,
-      // Include data needed for saving conversation when feedback is submitted
-      question: message,
-    });
+    // Check confidence level - if below 0.8, return a low confidence message
+    const maxConfidence = result.citations.length > 0 
+      ? Math.max(...result.citations.map(c => c.score || 0)) 
+      : 0;
+    
+    console.log('Confidence check:', { maxConfidence, threshold: 0.8, isHighConfidence: maxConfidence >= 0.8 });
+
+    if (maxConfidence < 0.8) {
+      // Low confidence - suggest user to visit usda.gov or contact support
+      await sendToClient(connectionId, {
+        type: 'message',
+        message: "I'm not very confident about the answer to your question. For accurate information, I'd recommend visiting [usda.gov](https://www.usda.gov) or clicking the **Customer Support** button (headphone icon) in the top right corner to speak with a representative who can better assist you.",
+        citations: [], // Don't show citations for low confidence responses
+        conversationId,
+        sessionId: result.sessionId,
+        responseTimeMs: result.responseTimeMs,
+        question: message,
+        lowConfidence: true,
+      });
+    } else {
+      // High confidence - send the actual response
+      await sendToClient(connectionId, {
+        type: 'message',
+        message: result.answer,
+        citations: result.citations,
+        conversationId,
+        sessionId: result.sessionId,
+        responseTimeMs: result.responseTimeMs,
+        // Include data needed for saving conversation when feedback is submitted
+        question: message,
+      });
+    }
 
   } catch (error) {
     console.error('Error processing message:', error);

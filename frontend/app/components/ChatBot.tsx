@@ -825,27 +825,6 @@ export default function ChatBot() {
                             </a>
                           ))}
                         </div>
-
-                        {/* Horizontal divider */}
-                        <hr className="my-3 border-gray-200" />
-
-                        {/* Confidence indicator */}
-                        {(() => {
-                          const maxScore = Math.max(...message.citations.map(c => c.score || 0));
-                          const isHigh = maxScore >= 0.5;
-                          return (
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-gray-700">Confidence:</span>
-                              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                isHigh
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}>
-                                {isHigh ? 'High Confidence' : 'Low Confidence'}
-                              </span>
-                            </div>
-                          );
-                        })()}
                       </div>
                     )}
                     {/* Feedback Buttons - only for bot messages with conversationId, not welcome message, not while streaming */}
