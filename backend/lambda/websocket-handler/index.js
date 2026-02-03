@@ -1,7 +1,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
-const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { BedrockAgentRuntimeClient, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockRuntimeClient, ApplyGuardrailCommand, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { v4: uuidv4 } = require('uuid');
 
@@ -73,138 +73,191 @@ async function applyGuardrails(text) {
   }
 }
 
-// Query Knowledge Base
-async function queryKnowledgeBase(question, sessionId) {
-  const startTime = Date.now();
-  
-  // Get region from environment
-  const region = process.env.AWS_REGION || 'us-west-2';
-  
-  // Use Amazon Nova Pro via inference profile
-  const modelArn = `arn:aws:bedrock:${region}:${process.env.AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
-  
-  console.log('Using model ARN:', modelArn);
+// Step 1: Retrieve relevant chunks from Knowledge Base with confidence scores
+async function retrieveFromKnowledgeBase(question) {
+  console.log('=== STEP 1: RETRIEVING FROM KNOWLEDGE BASE ===');
+  console.log('Question:', question);
   console.log('Knowledge Base ID:', KNOWLEDGE_BASE_ID);
-  
+
   const params = {
-    input: { text: question },
-    retrieveAndGenerateConfiguration: {
-      type: 'KNOWLEDGE_BASE',
-      knowledgeBaseConfiguration: {
-        knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        modelArn: modelArn,
-        retrievalConfiguration: {
-          vectorSearchConfiguration: {
-            numberOfResults: 5,
-          },
-        },
-        generationConfiguration: {
-          inferenceConfig: {
-            textInferenceConfig: {
-              maxTokens: 2048,
-              temperature: 0.7,
-              topP: 0.9,
-            },
-          },
-        },
+    knowledgeBaseId: KNOWLEDGE_BASE_ID,
+    retrievalQuery: {
+      text: question,
+    },
+    retrievalConfiguration: {
+      vectorSearchConfiguration: {
+        numberOfResults: 5,
       },
     },
   };
 
-  if (sessionId) {
-    params.sessionId = sessionId;
-  }
-
   try {
-    const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
-    const responseTimeMs = Date.now() - startTime;
-
-    console.log('Knowledge Base response received:', {
-      hasOutput: !!response.output?.text,
-      citationsCount: response.citations?.length || 0,
-      responseTimeMs,
+    const response = await bedrockAgentClient.send(new RetrieveCommand(params));
+    
+    console.log('Retrieve response received:', {
+      resultsCount: response.retrievalResults?.length || 0,
     });
 
-    // Detailed logging for confidence score debugging
-    console.log('=== CONFIDENCE SCORE DEBUG START ===');
-    console.log('Full citations array:', JSON.stringify(response.citations, null, 2));
-    
-    if (response.citations && response.citations.length > 0) {
-      response.citations.forEach((citation, citationIndex) => {
-        console.log(`Citation ${citationIndex}:`, {
-          generatedResponsePartText: citation.generatedResponsePart?.textResponsePart?.text?.substring(0, 100) + '...',
-          retrievedReferencesCount: citation.retrievedReferences?.length || 0,
-        });
-        
-        if (citation.retrievedReferences && citation.retrievedReferences.length > 0) {
-          citation.retrievedReferences.forEach((ref, refIndex) => {
-            console.log(`  Reference ${refIndex}:`, {
-              score: ref.score,
-              scoreType: typeof ref.score,
-              hasLocation: !!ref.location,
-              locationType: ref.location?.type,
-              s3Uri: ref.location?.s3Location?.uri,
-              webUrl: ref.location?.webLocation?.url,
-              // Log the entire reference object to see all available fields
-              fullReference: JSON.stringify(ref, null, 2),
-            });
-          });
-        } else {
-          console.log('  No retrieved references for this citation');
-        }
+    // Extract results with confidence scores
+    const results = response.retrievalResults?.map((result, index) => {
+      console.log(`Result ${index + 1}:`, {
+        score: result.score,
+        scoreType: typeof result.score,
+        location: result.location?.s3Location?.uri || result.location?.webLocation?.url || 'Unknown',
+        contentPreview: result.content?.text?.substring(0, 200) + '...',
       });
-    } else {
-      console.log('No citations in response');
-    }
-    console.log('=== CONFIDENCE SCORE DEBUG END ===');
 
-    // Extract citations - collect ALL scores from all references for better confidence calculation
-    const citations = response.citations?.map((citation, index) => {
-      // Get all scores from all retrieved references for this citation
-      const allScores = citation.retrievedReferences?.map(ref => ref.score).filter(s => s !== undefined) || [];
-      const maxScoreForCitation = allScores.length > 0 ? Math.max(...allScores) : 0;
-      
-      console.log(`Citation ${index} scores:`, {
-        allScores,
-        maxScoreForCitation,
-        firstRefScore: citation.retrievedReferences?.[0]?.score,
-      });
-      
       return {
         id: index + 1,
-        text: citation.generatedResponsePart?.textResponsePart?.text || '',
-        source: citation.retrievedReferences?.[0]?.location?.webLocation?.url || 
-                citation.retrievedReferences?.[0]?.location?.s3Location?.uri || 
+        content: result.content?.text || '',
+        source: result.location?.webLocation?.url || 
+                result.location?.s3Location?.uri || 
                 'Unknown source',
-        score: maxScoreForCitation, // Use max score from all references
+        score: result.score || 0,
       };
     }) || [];
-    
-    // Log final extracted citations with scores
-    console.log('Final extracted citations with scores:', citations.map(c => ({
-      id: c.id,
-      score: c.score,
-      source: c.source.substring(0, 50) + '...',
-    })));
-    
-    const overallMaxScore = citations.length > 0 ? Math.max(...citations.map(c => c.score)) : 0;
-    console.log('Overall max confidence score:', overallMaxScore, 'Threshold for high confidence: 0.5');
 
-    return {
-      answer: response.output?.text || "I couldn't find relevant information about that topic. Please try asking about USDA programs, farm loans, conservation, or other agricultural services.",
-      citations,
-      sessionId: response.sessionId,
-      responseTimeMs,
-    };
+    // Log all scores for debugging
+    console.log('=== CONFIDENCE SCORES FROM RETRIEVE ===');
+    results.forEach((r, i) => {
+      console.log(`  Result ${i + 1}: score=${r.score}, source=${r.source.substring(0, 60)}...`);
+    });
+    
+    const maxScore = results.length > 0 ? Math.max(...results.map(r => r.score)) : 0;
+    console.log('Maximum confidence score:', maxScore);
+    console.log('=== END RETRIEVE ===');
+
+    return results;
   } catch (error) {
-    console.error('Knowledge Base query error:', {
+    console.error('Retrieve error:', {
       errorName: error.name,
       errorMessage: error.message,
       errorCode: error.$metadata?.httpStatusCode,
-      knowledgeBaseId: KNOWLEDGE_BASE_ID,
     });
     throw error;
   }
+}
+
+// Step 2: Generate answer using retrieved context
+async function generateAnswer(question, retrievedResults) {
+  console.log('=== STEP 2: GENERATING ANSWER ===');
+  
+  // Build context from retrieved results
+  const context = retrievedResults
+    .map((r, i) => `[Source ${i + 1}]: ${r.content}`)
+    .join('\n\n');
+
+  const prompt = `You are AskUSDA, a helpful assistant for the United States Department of Agriculture. 
+Answer the user's question based ONLY on the provided context. If the context doesn't contain enough information to answer the question, say so.
+Be concise, accurate, and helpful. Format your response using markdown when appropriate.
+
+Context:
+${context}
+
+User Question: ${question}
+
+Answer:`;
+
+  console.log('Prompt length:', prompt.length);
+
+  // Use Amazon Nova Pro model
+  const modelId = 'amazon.nova-pro-v1:0';
+  
+  const requestBody = {
+    messages: [
+      {
+        role: 'user',
+        content: [{ text: prompt }],
+      },
+    ],
+    inferenceConfig: {
+      maxTokens: 2048,
+      temperature: 0.7,
+      topP: 0.9,
+    },
+  };
+
+  try {
+    const response = await bedrockRuntimeClient.send(new InvokeModelCommand({
+      modelId: modelId,
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: JSON.stringify(requestBody),
+    }));
+
+    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+    const answer = responseBody.output?.message?.content?.[0]?.text || 
+                   responseBody.content?.[0]?.text ||
+                   "I couldn't generate a response. Please try again.";
+
+    console.log('Generated answer length:', answer.length);
+    console.log('=== END GENERATION ===');
+
+    return answer;
+  } catch (error) {
+    console.error('Generation error:', {
+      errorName: error.name,
+      errorMessage: error.message,
+    });
+    throw error;
+  }
+}
+
+// Combined: Query Knowledge Base with two-step approach
+async function queryKnowledgeBase(question, sessionId) {
+  const startTime = Date.now();
+
+  // Step 1: Retrieve with confidence scores
+  const retrievedResults = await retrieveFromKnowledgeBase(question);
+  
+  // Calculate max confidence score
+  const maxConfidence = retrievedResults.length > 0 
+    ? Math.max(...retrievedResults.map(r => r.score)) 
+    : 0;
+
+  console.log('=== CONFIDENCE CHECK ===');
+  console.log('Max confidence score:', maxConfidence);
+  console.log('Threshold: 0.8');
+  console.log('Passes threshold:', maxConfidence >= 0.8);
+  console.log('========================');
+
+  // If confidence is too low, don't generate - return early
+  if (maxConfidence < 0.8) {
+    const responseTimeMs = Date.now() - startTime;
+    return {
+      answer: null,
+      citations: retrievedResults.map(r => ({
+        id: r.id,
+        text: r.content.substring(0, 200),
+        source: r.source,
+        score: r.score,
+      })),
+      maxConfidence,
+      responseTimeMs,
+      lowConfidence: true,
+    };
+  }
+
+  // Step 2: Generate answer using retrieved context
+  const answer = await generateAnswer(question, retrievedResults);
+  const responseTimeMs = Date.now() - startTime;
+
+  // Build citations from retrieved results
+  const citations = retrievedResults.map(r => ({
+    id: r.id,
+    text: r.content.substring(0, 200),
+    source: r.source,
+    score: r.score,
+  }));
+
+  return {
+    answer,
+    citations,
+    maxConfidence,
+    sessionId: sessionId || uuidv4(), // Generate new session ID if not provided
+    responseTimeMs,
+    lowConfidence: false,
+  };
 }
 
 // Save escalation request
@@ -262,19 +315,14 @@ async function handleSendMessage(connectionId, body) {
       return;
     }
 
-    // Query Knowledge Base
+    // Query Knowledge Base (two-step: retrieve + generate)
     const result = await queryKnowledgeBase(message, sessionId);
     
     // Generate conversation ID (but don't save yet - only save when feedback is given)
     const conversationId = uuidv4();
 
-    // Check confidence level - if below 0.8, return a low confidence message
-    const maxConfidence = result.citations.length > 0 
-      ? Math.max(...result.citations.map(c => c.score || 0)) 
-      : 0;
-    
     // Detailed confidence logging for manual verification
-    console.log('=== CONFIDENCE SCORE CHECK ===');
+    console.log('=== FINAL CONFIDENCE SCORE CHECK ===');
     console.log('User Question:', message);
     console.log('Number of citations:', result.citations.length);
     console.log('Individual citation scores:', result.citations.map((c, i) => ({
@@ -282,13 +330,13 @@ async function handleSendMessage(connectionId, body) {
       score: c.score,
       source: c.source?.substring(0, 80) + '...'
     })));
-    console.log('Maximum confidence score:', maxConfidence);
+    console.log('Maximum confidence score:', result.maxConfidence);
     console.log('Threshold:', 0.8);
-    console.log('Is high confidence (>= 0.8)?:', maxConfidence >= 0.8);
-    console.log('Decision:', maxConfidence >= 0.8 ? 'SHOW RESPONSE' : 'SHOW LOW CONFIDENCE MESSAGE');
-    console.log('=== END CONFIDENCE CHECK ===');
+    console.log('Is high confidence (>= 0.8)?:', result.maxConfidence >= 0.8);
+    console.log('Decision:', result.lowConfidence ? 'SHOW LOW CONFIDENCE MESSAGE' : 'SHOW RESPONSE');
+    console.log('=== END FINAL CHECK ===');
 
-    if (maxConfidence < 0.8) {
+    if (result.lowConfidence) {
       // Low confidence - suggest user to visit usda.gov or contact support
       await sendToClient(connectionId, {
         type: 'message',
@@ -299,6 +347,7 @@ async function handleSendMessage(connectionId, body) {
         responseTimeMs: result.responseTimeMs,
         question: message,
         lowConfidence: true,
+        maxConfidence: result.maxConfidence, // Send to frontend for logging
       });
     } else {
       // High confidence - send the actual response
@@ -309,8 +358,8 @@ async function handleSendMessage(connectionId, body) {
         conversationId,
         sessionId: result.sessionId,
         responseTimeMs: result.responseTimeMs,
-        // Include data needed for saving conversation when feedback is submitted
         question: message,
+        maxConfidence: result.maxConfidence, // Send to frontend for logging
       });
     }
 
