@@ -920,9 +920,9 @@ export default function AdminPage() {
       {/* Conversation Viewer Modal */}
       {selectedConversation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl flex flex-col max-h-[90vh]">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-gray-200 bg-[#002d72] px-6 py-4">
+            <div className="flex items-center justify-between border-b border-gray-200 bg-[#002d72] px-6 py-4 shrink-0 rounded-t-2xl">
               <div>
                 <h3 className="font-semibold text-white">Conversation Details</h3>
                 <p className="text-sm text-white/80">
@@ -949,18 +949,18 @@ export default function AdminPage() {
             </div>
 
             {/* Modal Body - Conversation */}
-            <div className="max-h-[60vh] overflow-y-auto bg-gray-50 p-4">
+            <div className="flex-1 min-h-0 overflow-y-auto bg-gray-50 p-4">
               <div className="space-y-4">
                 {/* Question */}
                 <div className="flex justify-end">
-                  <div className="max-w-full rounded-2xl bg-[#002d72] text-white px-4 py-3">
-                    <p className="text-sm leading-relaxed break-words">{selectedConversation.question}</p>
+                  <div className="max-w-[85%] rounded-2xl bg-[#002d72] text-white px-4 py-3">
+                    <p className="text-sm leading-relaxed">{selectedConversation.question}</p>
                   </div>
                 </div>
 
                 {/* Answer */}
                 <div className="flex justify-start">
-                  <div className="w-full rounded-2xl bg-white text-gray-800 shadow-sm px-4 py-3">
+                  <div className="max-w-[85%] rounded-2xl bg-white text-gray-800 shadow-sm px-4 py-3">
                     <div className="prose prose-sm max-w-none overflow-wrap-anywhere prose-gray prose-a:text-[#002d72]">
                       <ReactMarkdown
                         components={{
@@ -1076,7 +1076,7 @@ export default function AdminPage() {
             </div>
 
             {/* Modal Footer */}
-            <div className="border-t border-gray-200 bg-white px-6 py-4">
+            <div className="border-t border-gray-200 bg-white px-6 py-4 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-gray-500">
                   Conversation ID: {selectedConversation.conversationId}
