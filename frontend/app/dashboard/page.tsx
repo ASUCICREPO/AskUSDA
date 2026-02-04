@@ -110,6 +110,61 @@ const feedbackIcons = {
   ),
 };
 
+// Generate a smart, concise title from a URL
+function generateSourceTitle(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.replace(/^www\./, '');
+    const pathSegments = urlObj.pathname
+      .split('/')
+      .filter(segment => segment && segment.length > 0);
+    
+    // Map common USDA domains to friendly names
+    const domainMap: Record<string, string> = {
+      'usda.gov': 'USDA',
+      'fsa.usda.gov': 'Farm Service Agency',
+      'nrcs.usda.gov': 'Natural Resources Conservation',
+      'fns.usda.gov': 'Food & Nutrition Service',
+      'ams.usda.gov': 'Agricultural Marketing Service',
+      'aphis.usda.gov': 'Animal & Plant Health',
+      'farmers.gov': 'Farmers.gov',
+      'rd.usda.gov': 'Rural Development',
+      'fs.usda.gov': 'Forest Service',
+    };
+    
+    const friendlyDomain = domainMap[hostname] || hostname;
+    
+    // Get the last meaningful path segment
+    if (pathSegments.length > 0) {
+      let lastSegment = pathSegments[pathSegments.length - 1];
+      
+      // Remove file extensions
+      lastSegment = lastSegment.replace(/\.(html?|pdf|aspx?|php)$/i, '');
+      
+      // Convert kebab-case or snake_case to Title Case
+      const title = lastSegment
+        .replace(/[-_]/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(' ')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+      
+      // If title is too long, truncate it
+      const maxLength = 40;
+      const truncatedTitle = title.length > maxLength 
+        ? title.substring(0, maxLength) + '...' 
+        : title;
+      
+      return `${friendlyDomain}: ${truncatedTitle}`;
+    }
+    
+    return friendlyDomain;
+  } catch {
+    // If URL parsing fails, return a truncated version of the original
+    return url.length > 50 ? url.substring(0, 50) + '...' : url;
+  }
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, signOut } = useAdminAuth();
@@ -1025,43 +1080,23 @@ export default function AdminPage() {
                     
                     {/* Sources/Citations */}
                     {selectedConversation.citations && selectedConversation.citations.length > 0 && (
-                      <div className="mt-4 border-t border-gray-200 pt-3">
+                      <div className="mt-3 border-t border-gray-200 pt-3">
                         <p className="mb-2 text-sm font-semibold text-gray-700">Sources:</p>
                         <div className="space-y-2">
-                          {selectedConversation.citations.slice(0, 3).map((citation, index) => (
+                          {selectedConversation.citations.slice(0, 3).map((citation) => (
                             <a
                               key={citation.id}
                               href={citation.source}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="block text-[#1a5fb4] hover:underline"
+                              title={citation.source}
                             >
                               <span className="inline-block mr-1.5">↗</span>
-                              <span className="text-sm font-medium">Source {index + 1}</span>
+                              <span className="text-sm font-medium">{generateSourceTitle(citation.source)}</span>
                             </a>
                           ))}
                         </div>
-
-                        {/* Horizontal divider */}
-                        <hr className="my-3 border-gray-200" />
-
-                        {/* Confidence indicator */}
-                        {(() => {
-                          const maxScore = Math.max(...selectedConversation.citations.map(c => c.score || 0));
-                          const isHigh = maxScore >= 0.5;
-                          return (
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-gray-700">Confidence:</span>
-                              <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                isHigh
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-red-100 text-red-700'
-                              }`}>
-                                {isHigh ? 'High Confidence' : 'Low Confidence'}
-                              </span>
-                            </div>
-                          );
-                        })()}
                       </div>
                     )}
                     
