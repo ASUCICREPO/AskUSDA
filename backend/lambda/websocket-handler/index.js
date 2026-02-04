@@ -218,23 +218,21 @@ async function queryKnowledgeBase(question, sessionId) {
     ? Math.max(...retrievedResults.map(r => r.score)) 
     : 0;
 
+  // Confidence threshold - responses below this won't be shown
+  const CONFIDENCE_THRESHOLD = 0.5;
+
   console.log('=== CONFIDENCE CHECK ===');
   console.log('Max confidence score:', maxConfidence);
-  console.log('Threshold: 0.8');
-  console.log('Passes threshold:', maxConfidence >= 0.8);
+  console.log('Threshold:', CONFIDENCE_THRESHOLD);
+  console.log('Passes threshold:', maxConfidence >= CONFIDENCE_THRESHOLD);
   console.log('========================');
 
-  // If confidence is too low, don't generate - return early
-  if (maxConfidence < 0.3) {
+  // If confidence is too low, don't generate - return early with NO citations
+  if (maxConfidence < CONFIDENCE_THRESHOLD) {
     const responseTimeMs = Date.now() - startTime;
     return {
       answer: null,
-      citations: retrievedResults.map(r => ({
-        id: r.id,
-        text: r.content.substring(0, 200),
-        source: r.source,
-        score: r.score,
-      })),
+      citations: [], // Don't return citations for low confidence
       maxConfidence,
       responseTimeMs,
       lowConfidence: true,
