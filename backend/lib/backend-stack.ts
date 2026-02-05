@@ -168,9 +168,10 @@ export class USDAChatbotStack extends cdk.Stack {
       }
     }
 
-    // Web Crawler Data Source
-    const webCrawlerDataSource = new bedrock.CfnDataSource(this, 'WebCrawlerDataSource', {
-      name: 'AskUSDA-WebCrawler-v2',
+    // ==================== Web Crawler Data Sources ====================
+    // Data Source 1: USDA.gov - Trade, Food, Farming, Forestry sections
+    const usdaGovDataSource = new bedrock.CfnDataSource(this, 'UsdaGovDataSource', {
+      name: 'usdagov',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
       dataSourceConfiguration: {
         type: 'WEB',
@@ -178,17 +179,25 @@ export class USDAChatbotStack extends cdk.Stack {
           sourceConfiguration: {
             urlConfiguration: {
               seedUrls: [
-                { url: 'https://www.usda.gov/'},
-                { url: 'https://www.farmers.gov/'},
+                { url: 'https://www.usda.gov/trade-and-markets/' },
+                { url: 'https://www.usda.gov/about-food/' },
+                { url: 'https://www.usda.gov/farming-and-ranching/' },
+                { url: 'https://www.usda.gov/forestry/' },
               ],
             },
           },
           crawlerConfiguration: {
             crawlerLimits: {
-              maxPages: 1500,
-              rateLimit: 50,
+              maxPages: 25000,
+              rateLimit: 300,
             },
-            scope: 'HOST_ONLY',
+            scope: 'DEFAULT',
+            inclusionFilters: [
+              'https://www\\.usda\\.gov/trade-and-markets(/.*)?$',
+              'https://www\\.usda\\.gov/about-food(/.*)?$',
+              'https://www\\.usda\\.gov/farming-and-ranching(/.*)?$',
+              'https://www\\.usda\\.gov/forestry(/.*)?$',
+            ],
           },
         },
       },
@@ -201,9 +210,80 @@ export class USDAChatbotStack extends cdk.Stack {
         },
       },
     });
+    usdaGovDataSource.addDependency(knowledgeBase);
 
-    // Ensure data source is created after knowledge base
-    webCrawlerDataSource.addDependency(knowledgeBase);
+    // Data Source 2: USDA.gov v2 - Sustainability and Trade sections
+    const usdaGov2DataSource = new bedrock.CfnDataSource(this, 'UsdaGov2DataSource', {
+      name: 'usdagov2',
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: 'WEB',
+        webConfiguration: {
+          sourceConfiguration: {
+            urlConfiguration: {
+              seedUrls: [
+                { url: 'https://www.usda.gov/sustainability/' },
+                { url: 'https://www.usda.gov/trade-and-markets/' },
+              ],
+            },
+          },
+          crawlerConfiguration: {
+            crawlerLimits: {
+              maxPages: 25000,
+              rateLimit: 300,
+            },
+            scope: 'DEFAULT',
+            inclusionFilters: [
+              'https://www\\.usda\\.gov/sustainability(/.*)?$',
+              'https://www\\.usda\\.gov/trade-and-markets(/.*)?$',
+            ],
+          },
+        },
+      },
+      vectorIngestionConfiguration: {
+        parsingConfiguration: {
+          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
+          bedrockFoundationModelConfiguration: {
+            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+          },
+        },
+      },
+    });
+    usdaGov2DataSource.addDependency(knowledgeBase);
+
+    // Data Source 3: Farmers.gov - Full site crawl
+    const farmersGovDataSource = new bedrock.CfnDataSource(this, 'FarmersGovDataSource', {
+      name: 'farmersgov',
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: 'WEB',
+        webConfiguration: {
+          sourceConfiguration: {
+            urlConfiguration: {
+              seedUrls: [
+                { url: 'https://www.farmers.gov/' },
+              ],
+            },
+          },
+          crawlerConfiguration: {
+            crawlerLimits: {
+              maxPages: 25000,
+              rateLimit: 200,
+            },
+            scope: 'DEFAULT',
+          },
+        },
+      },
+      vectorIngestionConfiguration: {
+        parsingConfiguration: {
+          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
+          bedrockFoundationModelConfiguration: {
+            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+          },
+        },
+      },
+    });
+    farmersGovDataSource.addDependency(knowledgeBase);
 
     // ==================== Daily Knowledge Base Sync (EventBridge + Lambda) ====================
     // Lambda function to trigger KB sync
@@ -231,38 +311,59 @@ const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/clien
 const client = new BedrockAgentClient({});
 
 exports.handler = async (event) => {
-  console.log('Starting Knowledge Base sync job...');
+  console.log('Starting Knowledge Base sync jobs for all data sources...');
   console.log('Event:', JSON.stringify(event, null, 2));
   
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
-  const dataSourceId = process.env.DATA_SOURCE_ID;
+  const dataSourceIds = [
+    process.env.DATA_SOURCE_ID_USDAGOV,
+    process.env.DATA_SOURCE_ID_USDAGOV2,
+    process.env.DATA_SOURCE_ID_FARMERSGOV,
+  ].filter(Boolean);
   
-  try {
-    const response = await client.send(new StartIngestionJobCommand({
-      knowledgeBaseId,
-      dataSourceId,
-    }));
-    
-    console.log('Ingestion job started successfully:', JSON.stringify(response, null, 2));
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        message: 'Knowledge Base sync started',
+  const results = [];
+  
+  for (const dataSourceId of dataSourceIds) {
+    try {
+      console.log('Starting ingestion for data source:', dataSourceId);
+      const response = await client.send(new StartIngestionJobCommand({
+        knowledgeBaseId,
+        dataSourceId,
+      }));
+      
+      console.log('Ingestion job started for', dataSourceId, ':', JSON.stringify(response, null, 2));
+      results.push({
+        dataSourceId,
+        status: 'started',
         ingestionJobId: response.ingestionJob?.ingestionJobId,
-      }),
-    };
-  } catch (error) {
-    console.error('Error starting ingestion job:', error);
-    throw error;
+      });
+    } catch (error) {
+      console.error('Error starting ingestion job for', dataSourceId, ':', error);
+      results.push({
+        dataSourceId,
+        status: 'error',
+        error: error.message,
+      });
+    }
   }
+  
+  return {
+    statusCode: 200,
+    body: JSON.stringify({
+      message: 'Knowledge Base sync initiated for all data sources',
+      results,
+    }),
+  };
 };
       `),
       role: kbSyncLambdaRole,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60),
       memorySize: 128,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        DATA_SOURCE_ID: webCrawlerDataSource.attrDataSourceId,
+        DATA_SOURCE_ID_USDAGOV: usdaGovDataSource.attrDataSourceId,
+        DATA_SOURCE_ID_USDAGOV2: usdaGov2DataSource.attrDataSourceId,
+        DATA_SOURCE_ID_FARMERSGOV: farmersGovDataSource.attrDataSourceId,
       },
     });
 
@@ -609,10 +710,22 @@ exports.handler = async (event) => {
       exportName: 'AskUSDA-OpenSearchEndpoint',
     });
 
-    new cdk.CfnOutput(this, 'WebCrawlerDataSourceId', {
-      value: webCrawlerDataSource.attrDataSourceId,
-      description: 'Web Crawler Data Source ID',
-      exportName: 'AskUSDA-WebCrawlerDataSourceId',
+    new cdk.CfnOutput(this, 'UsdaGovDataSourceId', {
+      value: usdaGovDataSource.attrDataSourceId,
+      description: 'USDA.gov Data Source ID',
+      exportName: 'AskUSDA-UsdaGovDataSourceId',
+    });
+
+    new cdk.CfnOutput(this, 'UsdaGov2DataSourceId', {
+      value: usdaGov2DataSource.attrDataSourceId,
+      description: 'USDA.gov v2 Data Source ID',
+      exportName: 'AskUSDA-UsdaGov2DataSourceId',
+    });
+
+    new cdk.CfnOutput(this, 'FarmersGovDataSourceId', {
+      value: farmersGovDataSource.attrDataSourceId,
+      description: 'Farmers.gov Data Source ID',
+      exportName: 'AskUSDA-FarmersGovDataSourceId',
     });
 
     new cdk.CfnOutput(this, 'GuardrailId', {
