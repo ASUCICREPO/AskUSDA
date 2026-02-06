@@ -212,7 +212,7 @@ export class USDAChatbotStack extends cdk.Stack {
     });
     usdaGovDataSource.addDependency(knowledgeBase);
 
-    // Data Source 2: USDA.gov v2 - Sustainability and Trade sections
+    // Data Source 2: USDA.gov v2 - Sustainability and About sections
     const usdaGov2DataSource = new bedrock.CfnDataSource(this, 'UsdaGov2DataSource', {
       name: 'usdagov2',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
@@ -223,7 +223,7 @@ export class USDAChatbotStack extends cdk.Stack {
             urlConfiguration: {
               seedUrls: [
                 { url: 'https://www.usda.gov/sustainability/' },
-                { url: 'https://www.usda.gov/trade-and-markets/' },
+                { url: 'https://www.usda.gov/about/' },
               ],
             },
           },
@@ -235,7 +235,7 @@ export class USDAChatbotStack extends cdk.Stack {
             scope: 'DEFAULT',
             inclusionFilters: [
               'https://www\\.usda\\.gov/sustainability(/.*)?$',
-              'https://www\\.usda\\.gov/trade-and-markets(/.*)?$',
+              'https://www\\.usda\\.gov/about(/.*)?$',
             ],
           },
         },
