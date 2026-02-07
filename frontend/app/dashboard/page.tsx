@@ -181,6 +181,13 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Pagination states
+  const [feedbackPage, setFeedbackPage] = useState(0);
+  const [feedbackTotal, setFeedbackTotal] = useState(0);
+  const [escalationPage, setEscalationPage] = useState(0);
+  const [escalationTotal, setEscalationTotal] = useState(0);
+  const ITEMS_PER_PAGE = 10;
+
   // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -212,10 +219,11 @@ export default function AdminPage() {
       setError(null);
 
       // Fetch all data in parallel
+      const feedbackFilterParam = feedbackFilter !== "all" ? `&filter=${feedbackFilter === "positive" ? "pos" : "neg"}` : "";
       const [metricsRes, feedbackRes, escalationsRes] = await Promise.all([
         fetch(`${ADMIN_API_URL}/metrics?days=7`, { headers }),
-        fetch(`${ADMIN_API_URL}/feedback?limit=20`, { headers }),
-        fetch(`${ADMIN_API_URL}/escalations`, { headers }),
+        fetch(`${ADMIN_API_URL}/feedback?limit=${ITEMS_PER_PAGE}&offset=${feedbackPage * ITEMS_PER_PAGE}${feedbackFilterParam}`, { headers }),
+        fetch(`${ADMIN_API_URL}/escalations?limit=${ITEMS_PER_PAGE}&offset=${escalationPage * ITEMS_PER_PAGE}`, { headers }),
       ]);
 
       // Check for authentication errors
@@ -237,14 +245,16 @@ export default function AdminPage() {
 
       setMetrics(metricsData);
       setFeedbackConversations(feedbackData.conversations || []);
+      setFeedbackTotal(feedbackData.total || 0);
       setEscalationRequests(escalationsData.escalations || []);
+      setEscalationTotal(escalationsData.total || 0);
     } catch (err) {
       console.error("Error fetching admin data:", err);
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
       setIsLoading(false);
     }
-  }, [user?.idToken, signOut, router]);
+  }, [user?.idToken, signOut, router, feedbackPage, escalationPage, feedbackFilter]);
 
   // Fetch data on mount (only when authenticated)
   useEffect(() => {
@@ -268,6 +278,7 @@ export default function AdminPage() {
 
       if (res.ok) {
         setEscalationRequests((prev) => prev.filter((e) => e.id !== id));
+        setEscalationTotal((prev) => prev - 1);
       }
     } catch (err) {
       console.error("Error deleting escalation:", err);
@@ -276,12 +287,7 @@ export default function AdminPage() {
 
   const filteredRequests = escalationRequests;
 
-  const filteredFeedback = feedbackConversations.filter((conv) => {
-    const matchesFeedback = feedbackFilter === "all" || 
-                           (feedbackFilter === "positive" && conv.feedback === "pos") ||
-                           (feedbackFilter === "negative" && conv.feedback === "neg");
-    return matchesFeedback;
-  });
+  // filteredFeedback is now handled server-side, so we use feedbackConversations directly
 
   // Build stats from metrics
   const stats = [
@@ -847,18 +853,27 @@ export default function AdminPage() {
           </div>
 
           {/* Pagination - only show when there are items */}
-          {filteredRequests.length > 0 && (
+          {escalationTotal > 0 && (
             <div className="flex items-center justify-between border-t border-gray-200 px-6 py-4">
               <p className="text-sm text-gray-500">
-                Showing <span className="font-medium">{filteredRequests.length}</span> of{" "}
-                <span className="font-medium">{escalationRequests.length}</span> results
+                Showing <span className="font-medium">{escalationPage * ITEMS_PER_PAGE + 1}</span> to{" "}
+                <span className="font-medium">{Math.min((escalationPage + 1) * ITEMS_PER_PAGE, escalationTotal)}</span> of{" "}
+                <span className="font-medium">{escalationTotal}</span> results
               </p>
-              {escalationRequests.length > 10 && (
+              {escalationTotal > ITEMS_PER_PAGE && (
                 <div className="flex items-center gap-2">
-                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
+                  <button 
+                    onClick={() => setEscalationPage(p => Math.max(0, p - 1))}
+                    disabled={escalationPage === 0}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
                     Previous
                   </button>
-                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                  <button 
+                    onClick={() => setEscalationPage(p => p + 1)}
+                    disabled={(escalationPage + 1) * ITEMS_PER_PAGE >= escalationTotal}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
                     Next
                   </button>
                 </div>
@@ -874,7 +889,10 @@ export default function AdminPage() {
             <div className="flex items-center gap-3">
               <select
                 value={feedbackFilter}
-                onChange={(e) => setFeedbackFilter(e.target.value)}
+                onChange={(e) => {
+                  setFeedbackFilter(e.target.value);
+                  setFeedbackPage(0); // Reset to first page when filter changes
+                }}
                 className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 outline-none focus:border-[#002d72] focus:ring-2 focus:ring-[#002d72]/20"
               >
                 <option value="all">All Feedback</option>
@@ -903,14 +921,14 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredFeedback.length === 0 ? (
+                {feedbackConversations.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="px-6 py-12 text-center">
                       <p className="text-sm text-gray-500">No feedback received yet</p>
                     </td>
                   </tr>
                 ) : (
-                  filteredFeedback.map((conv) => (
+                  feedbackConversations.map((conv) => (
                     <tr key={conv.conversationId} className="transition-colors hover:bg-gray-50">
                       <td className="whitespace-nowrap px-6 py-4">
                         <span className="font-mono text-sm text-gray-600">{conv.sessionId.substring(0, 12)}...</span>
@@ -951,18 +969,27 @@ export default function AdminPage() {
           </div>
 
           {/* Pagination - only show when there are items */}
-          {filteredFeedback.length > 0 && (
+          {feedbackTotal > 0 && (
             <div className="flex items-center justify-between border-t border-gray-200 px-6 py-4">
               <p className="text-sm text-gray-500">
-                Showing <span className="font-medium">{filteredFeedback.length}</span> of{" "}
-                <span className="font-medium">{feedbackConversations.length}</span> conversations
+                Showing <span className="font-medium">{feedbackPage * ITEMS_PER_PAGE + 1}</span> to{" "}
+                <span className="font-medium">{Math.min((feedbackPage + 1) * ITEMS_PER_PAGE, feedbackTotal)}</span> of{" "}
+                <span className="font-medium">{feedbackTotal}</span> conversations
               </p>
-              {feedbackConversations.length > 10 && (
+              {feedbackTotal > ITEMS_PER_PAGE && (
                 <div className="flex items-center gap-2">
-                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50">
+                  <button 
+                    onClick={() => setFeedbackPage(p => Math.max(0, p - 1))}
+                    disabled={feedbackPage === 0}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
                     Previous
                   </button>
-                  <button className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                  <button 
+                    onClick={() => setFeedbackPage(p => p + 1)}
+                    disabled={(feedbackPage + 1) * ITEMS_PER_PAGE >= feedbackTotal}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
                     Next
                   </button>
                 </div>
