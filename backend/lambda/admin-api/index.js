@@ -125,53 +125,79 @@ async function getMetrics(days = 7) {
 }
 
 // Get feedback conversations (only returns conversations with feedback - pos or neg)
-async function getFeedbackConversations(limit = 50, feedbackFilter = null) {
-  const conversations = [];
+async function getFeedbackConversations(limit = 50, offset = 0, feedbackFilter = null) {
+  let allConversations = [];
   
   try {
     if (feedbackFilter && (feedbackFilter === 'pos' || feedbackFilter === 'neg')) {
-      // Query by specific feedback type
-      const result = await docClient.send(new QueryCommand({
-        TableName: CONVERSATION_TABLE,
-        IndexName: FEEDBACK_INDEX,
-        KeyConditionExpression: 'feedback = :feedback',
-        ExpressionAttributeValues: { ':feedback': feedbackFilter },
-        ScanIndexForward: false,
-        Limit: limit,
-      }));
-      conversations.push(...(result.Items || []));
+      // Query by specific feedback type - get all items for counting
+      let lastKey = undefined;
+      do {
+        const result = await docClient.send(new QueryCommand({
+          TableName: CONVERSATION_TABLE,
+          IndexName: FEEDBACK_INDEX,
+          KeyConditionExpression: 'feedback = :feedback',
+          ExpressionAttributeValues: { ':feedback': feedbackFilter },
+          ScanIndexForward: false,
+          ExclusiveStartKey: lastKey,
+        }));
+        allConversations.push(...(result.Items || []));
+        lastKey = result.LastEvaluatedKey;
+      } while (lastKey);
     } else {
       // Get both positive and negative feedback (exclude conversations with no feedback)
-      const [posResult, negResult] = await Promise.all([
-        docClient.send(new QueryCommand({
-          TableName: CONVERSATION_TABLE,
-          IndexName: FEEDBACK_INDEX,
-          KeyConditionExpression: 'feedback = :feedback',
-          ExpressionAttributeValues: { ':feedback': 'pos' },
-          ScanIndexForward: false,
-          Limit: limit,
-        })),
-        docClient.send(new QueryCommand({
-          TableName: CONVERSATION_TABLE,
-          IndexName: FEEDBACK_INDEX,
-          KeyConditionExpression: 'feedback = :feedback',
-          ExpressionAttributeValues: { ':feedback': 'neg' },
-          ScanIndexForward: false,
-          Limit: limit,
-        })),
+      const [posItems, negItems] = await Promise.all([
+        (async () => {
+          const items = [];
+          let lastKey = undefined;
+          do {
+            const result = await docClient.send(new QueryCommand({
+              TableName: CONVERSATION_TABLE,
+              IndexName: FEEDBACK_INDEX,
+              KeyConditionExpression: 'feedback = :feedback',
+              ExpressionAttributeValues: { ':feedback': 'pos' },
+              ScanIndexForward: false,
+              ExclusiveStartKey: lastKey,
+            }));
+            items.push(...(result.Items || []));
+            lastKey = result.LastEvaluatedKey;
+          } while (lastKey);
+          return items;
+        })(),
+        (async () => {
+          const items = [];
+          let lastKey = undefined;
+          do {
+            const result = await docClient.send(new QueryCommand({
+              TableName: CONVERSATION_TABLE,
+              IndexName: FEEDBACK_INDEX,
+              KeyConditionExpression: 'feedback = :feedback',
+              ExpressionAttributeValues: { ':feedback': 'neg' },
+              ScanIndexForward: false,
+              ExclusiveStartKey: lastKey,
+            }));
+            items.push(...(result.Items || []));
+            lastKey = result.LastEvaluatedKey;
+          } while (lastKey);
+          return items;
+        })(),
       ]);
       
       // Combine and sort by timestamp descending
-      const allItems = [...(posResult.Items || []), ...(negResult.Items || [])];
-      allItems.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      conversations.push(...allItems.slice(0, limit));
+      allConversations = [...posItems, ...negItems];
+      allConversations.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     }
   } catch (error) {
     console.error('Error getting feedback conversations:', error);
   }
 
+  // Apply pagination
+  const total = allConversations.length;
+  const paginatedConversations = allConversations.slice(offset, offset + limit);
+
   return {
-    conversations: conversations.map(conv => {
+    total,
+    conversations: paginatedConversations.map(conv => {
       // Parse citations from JSON string
       let citations = [];
       try {
@@ -205,28 +231,40 @@ async function getFeedbackConversations(limit = 50, feedbackFilter = null) {
 }
 
 // Get escalation requests
-async function getEscalations() {
+async function getEscalations(limit = 50, offset = 0) {
   try {
-    const result = await docClient.send(new ScanCommand({
-      TableName: ESCALATION_TABLE,
+    // Get all items for proper pagination
+    let allItems = [];
+    let lastKey = undefined;
+    do {
+      const result = await docClient.send(new ScanCommand({
+        TableName: ESCALATION_TABLE,
+        ExclusiveStartKey: lastKey,
+      }));
+      allItems.push(...(result.Items || []));
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    // Sort by timestamp descending
+    allItems.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    
+    const total = allItems.length;
+    const paginatedItems = allItems.slice(offset, offset + limit);
+
+    const escalations = paginatedItems.map(item => ({
+      id: item.escalationId,
+      name: item.name,
+      email: item.email,
+      phone: item.phone || '',
+      question: item.question,
+      requestDate: item.timestamp,
+      status: item.status || 'pending',
     }));
 
-    const escalations = (result.Items || [])
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .map(item => ({
-        id: item.escalationId,
-        name: item.name,
-        email: item.email,
-        phone: item.phone || '',
-        question: item.question,
-        requestDate: item.timestamp,
-        status: item.status || 'pending',
-      }));
-
-    return { escalations };
+    return { escalations, total };
   } catch (error) {
     console.error('Error getting escalations:', error);
-    return { escalations: [] };
+    return { escalations: [], total: 0 };
   }
 }
 
@@ -369,8 +407,9 @@ exports.handler = async (event) => {
 
     if (path === '/feedback' && httpMethod === 'GET') {
       const limit = parseInt(queryStringParameters?.limit || '50', 10);
+      const offset = parseInt(queryStringParameters?.offset || '0', 10);
       const feedbackFilter = queryStringParameters?.filter;
-      const result = await getFeedbackConversations(limit, feedbackFilter);
+      const result = await getFeedbackConversations(limit, offset, feedbackFilter);
       return response(200, result);
     }
 
@@ -379,7 +418,9 @@ exports.handler = async (event) => {
     }
 
     if (path === '/escalations' && httpMethod === 'GET') {
-      const result = await getEscalations();
+      const limit = parseInt(queryStringParameters?.limit || '50', 10);
+      const offset = parseInt(queryStringParameters?.offset || '0', 10);
+      const result = await getEscalations(limit, offset);
       return response(200, result);
     }
 
