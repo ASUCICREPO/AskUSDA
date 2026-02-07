@@ -285,6 +285,28 @@ export default function AdminPage() {
     }
   };
 
+  // Delete conversation feedback
+  const handleDeleteConversation = async (conversationId: string) => {
+    if (!ADMIN_API_URL || !user?.idToken) return;
+    
+    try {
+      const res = await fetch(`${ADMIN_API_URL}/feedback/${conversationId}`, {
+        method: "DELETE",
+        headers: {
+          'Authorization': user.idToken,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (res.ok) {
+        setFeedbackConversations((prev) => prev.filter((c) => c.conversationId !== conversationId));
+        setFeedbackTotal((prev) => prev - 1);
+      }
+    } catch (err) {
+      console.error("Error deleting conversation:", err);
+    }
+  };
+
   const filteredRequests = escalationRequests;
 
   // filteredFeedback is now handled server-side, so we use feedbackConversations directly
@@ -950,16 +972,28 @@ export default function AdminPage() {
                         </span>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4">
-                        <button
-                          onClick={() => setSelectedConversation(conv)}
-                          className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#002d72]"
-                          title="View conversation"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                            <circle cx="12" cy="12" r="3" />
-                          </svg>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setSelectedConversation(conv)}
+                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-[#002d72]"
+                            title="View conversation"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteConversation(conv.conversationId)}
+                            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600"
+                            title="Delete"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
