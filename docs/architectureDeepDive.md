@@ -44,6 +44,7 @@ Users access the chatbot through a web interface hosted on **AWS Amplify**:
   - `GET /metrics` – Dashboard statistics (conversations, feedback, escalations) — **Cognito protected**
   - `GET /feedback`, `POST /feedback` – Conversation feedback list (protected) and submit (public)
   - `GET /escalations`, `POST /escalations`, `DELETE /escalations/{id}` – Escalation list/delete (protected), create (public)
+  - `DELETE /feedback/{id}` – Delete a conversation and its messages (protected)
   - CORS enabled; GET and DELETE routes use Cognito JWT authorizer
 
 ### 3. WebSocket Handler Lambda (Chat + Feedback + Escalation)
@@ -81,22 +82,28 @@ The **AskUSDA-WebSocketHandler** Lambda (`lambda/websocket-handler/index.js`) im
 
 ### 6. Data Sources (Knowledge Base)
 
-The Knowledge Base is populated via a **web crawler** data source:
+The Knowledge Base is populated via three **web crawler** data sources:
 
-- **Seed URLs**: `https://www.usda.gov/`, `https://www.farmers.gov/`
-- **Scope**: `HOST_ONLY`; configurable rate limit
+- **usdagov**: Crawls `https://www.usda.gov/trade-and-markets/`, `.../about-food/`, `.../farming-and-ranching/`, `.../forestry/` with inclusion filters
+- **usdagov2**: Crawls `https://www.usda.gov/sustainability/`, `.../about/` with inclusion filters
+- **farmersgov**: Crawls `https://www.farmers.gov/` (full site)
+
+All three use:
+- **Scope**: `HOST_ONLY`; configurable rate limit (200–300 pages/min)
+- **Parsing**: Bedrock Foundation Model (Claude 3 Haiku) for document parsing
 - Content is parsed, embedded with Titan, and stored in OpenSearch Serverless
-- Sync can be triggered manually or via EventBridge (daily at 6:00 AM UTC in current CDK via AskUSDA-DailyKBSync rule)
+- Sync can be triggered manually or via EventBridge (daily at 6:00 AM UTC via `AskUSDA-DailyKBSync` rule, which triggers a Lambda that starts ingestion jobs for all 3 data sources)
 
 ### 7. Admin Flow
 
 Admins use the **`/admin`** dashboard:
 
-1. Frontend calls **Admin HTTP API** with Cognito JWT: `GET /metrics`, `GET /feedback`, `GET /escalations`; and **DELETE** `/escalations/{id}`. Public (no auth): `POST /feedback`, `POST /escalations`.
+1. Frontend calls **Admin HTTP API** with Cognito JWT: `GET /metrics`, `GET /feedback`, `GET /escalations`; and **DELETE** `/escalations/{id}`, `/feedback/{id}`. Public (no auth): `POST /feedback`, `POST /escalations`.
 2. **AskUSDA-AdminHandler** Lambda (`lambda/admin-api/index.js`) implements each route.
 3. **Metrics**: Aggregated from **Conversation History** (by date index and scan for feedback/responseTimeMs) and **Escalation Requests** (count).
 4. **Feedback**: Queries **Conversation History** via `feedback-timestamp-index` (conversations with feedback); returns list with conversationId, question, answerPreview, feedback, timestamp, etc.
 5. **Escalations**: List (GET), create (POST from chatbot or form), delete (DELETE by escalationId). Table keyed by `escalationId` and `timestamp`.
+6. **Delete Conversation**: `DELETE /feedback/{id}` removes a conversation and all its messages from the Conversation History table.
 
 *Cognito is integrated: GET and DELETE admin routes use a JWT authorizer; POST /feedback and POST /escalations are public for the chatbot and escalation form.*
 
@@ -144,7 +151,7 @@ Two DynamoDB tables store application data:
 
 - **Amazon API Gateway**:
   - **WebSocket API** for chat and feedback
-  - **HTTP API** for admin (CORS, no authorizer in current setup)
+  - **HTTP API** for admin (CORS enabled, Cognito JWT authorizer on GET and DELETE routes)
 
 - **AWS Lambda** (Node.js 20.x):
   - **AskUSDA-WebSocketHandler** (`lambda/websocket-handler/index.js`): WebSocket routes (sendMessage, submitFeedback, submitEscalation), Knowledge Base RetrieveAndGenerate, guardrails, DynamoDB
@@ -170,7 +177,7 @@ Two DynamoDB tables store application data:
 ### Security & Authentication
 
 - **IAM**: Least-privilege roles for Lambdas (DynamoDB, Bedrock, Knowledge Base, OpenSearch, Execute API)
-- **Cognito**: Admin User Pool (`AskUSDA-AdminPool`) with JWT authorizer on GET /metrics, GET /feedback, GET /escalations, DELETE /escalations/{id}. POST /feedback and POST /escalations are public.
+- **Cognito**: Admin User Pool (`AskUSDA-AdminPool`) with JWT authorizer on GET /metrics, GET /feedback, GET /escalations, DELETE /escalations/{id}, DELETE /feedback/{id}. POST /feedback and POST /escalations are public.
 - **Secrets Manager**: Used for Amplify GitHub token (`usda-token`), not for app runtime secrets.
 
 ---
@@ -214,7 +221,7 @@ backend/
    - Bedrock Knowledge Base with Titan embeddings and OpenSearch storage
 
 5. **CfnDataSource** (`aws-cdk-lib/aws-bedrock`)
-   - Web crawler data source for usda.gov and farmers.gov
+   - Three web crawler data sources: `usdagov` (trade, food, farming, forestry), `usdagov2` (sustainability, about), `farmersgov` (full site)
 
 6. **CfnGuardrail** (`aws-cdk-lib/aws-bedrock`)
    - Content filters for input/output
@@ -223,7 +230,7 @@ backend/
    - WebSocket API with connect, disconnect, sendMessage, submitFeedback, submitEscalation routes
 
 8. **HttpApi** (`aws-cdk-lib/aws-apigatewayv2`)
-   - Admin HTTP API with /metrics, /feedback, /escalations, /escalations/{id}; JWT authorizer on GET/DELETE
+   - Admin HTTP API with /metrics, /feedback, /escalations, /escalations/{id}, /feedback/{id}; JWT authorizer on GET/DELETE
 
 9. **Function** (`aws-cdk-lib/aws-lambda`)
    - WebSocket and Admin Lambdas pointing at `lambda/websocket-handler` and `lambda/admin-api`

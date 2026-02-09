@@ -146,7 +146,7 @@ export default function ProtectedPage() {
 | Lambda | File | Purpose |
 |--------|------|---------|
 | **AskUSDA-WebSocketHandler** | `lambda/websocket-handler/index.js` | WebSocket routes: `sendMessage`, `submitFeedback`, `submitEscalation`; Bedrock KB RetrieveAndGenerate, guardrails |
-| **AskUSDA-AdminHandler** | `lambda/admin-api/index.js` | HTTP Admin API: GET /metrics, GET/POST /feedback, GET/POST /escalations, DELETE /escalations/{id} |
+| **AskUSDA-AdminHandler** | `lambda/admin-api/index.js` | HTTP Admin API: GET /metrics, GET/POST /feedback, GET/POST /escalations, DELETE /escalations/{id}, DELETE /feedback/{id} |
 
 ### Adding New Lambda Functions
 
@@ -177,14 +177,16 @@ exports.handler = async (event) => {
 
 The stack is organized roughly as:
 
-1. **DynamoDB** (~lines 18–64): Conversation History, Escalation Requests (and GSIs).
-2. **OpenSearch Serverless** (~66–90): Vector collection and index for the Knowledge Base.
-3. **Bedrock Knowledge Base** (~133–197): KB definition, web crawler data source, optional KBSync Lambda + EventBridge.
-4. **WebSocket Lambda** (~318–381): Handler, WebSocket API (`$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`).
-5. **Guardrail** (~383–412): Bedrock guardrail for content filtering.
-6. **Cognito** (~414–441): Admin User Pool and app client.
-7. **Admin Lambda + HTTP API** (~443–558): Admin API routes, JWT authorizer, CORS.
-8. **Outputs** (~560–620): WebSocket URL, Admin API URL, table names, KB IDs, Cognito IDs, etc.
+1. **DynamoDB** (~lines 19–65): Conversation History, Escalation Requests (and GSIs).
+2. **OpenSearch Serverless** (~67–109): Vector collection and index for the Knowledge Base.
+3. **Bedrock Knowledge Base** (~134–169): KB definition with Titan embeddings and OpenSearch storage.
+4. **Web Crawler Data Sources** (~171–286): Three data sources (`usdagov`, `usdagov2`, `farmersgov`) with web crawlers.
+5. **Daily KB Sync** (~288–386): EventBridge rule + Lambda to sync all 3 data sources daily.
+6. **WebSocket Lambda + API** (~388–509): Handler, WebSocket API (`$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`).
+7. **Guardrail** (~511–539): Bedrock guardrail for content filtering.
+8. **Cognito** (~541–576): Admin User Pool and app client.
+9. **Admin Lambda + HTTP API** (~578–693): Admin API routes, JWT authorizer, CORS.
+10. **Outputs** (~695–767): WebSocket URL, Admin API URL, table names, KB IDs, data source IDs, Cognito IDs, etc.
 
 When you add resources, follow existing patterns (environments, roles, dependencies) and update outputs if new URLs or IDs need to be exposed.
 
@@ -194,20 +196,28 @@ When you add resources, follow existing patterns (environments, roles, dependenc
 
 ### Adding or Changing Web Crawler URLs
 
-**Location**: `backend/lib/backend-stack.ts` (Web Crawler data source, ~lines 173–194)
+**Location**: `backend/lib/backend-stack.ts` (Web Crawler data sources, ~lines 171–286)
 
-The Knowledge Base uses a **web crawler** data source (no S3 document bucket). To add or change seed URLs:
+The Knowledge Base uses three **web crawler** data sources. Each data source crawls specific sections of USDA websites:
+
+- **usdagov** (~lines 173–213): Trade, food, farming, forestry sections of usda.gov
+- **usdagov2** (~lines 216–252): Sustainability and about sections of usda.gov
+- **farmersgov** (~lines 255–286): Full farmers.gov site
+
+To add seed URLs to an existing data source:
 
 ```typescript
 seedUrls: [
-  { url: 'https://www.usda.gov/' },
-  { url: 'https://www.farmers.gov/' },
+  { url: 'https://www.usda.gov/trade-and-markets/' },
+  { url: 'https://www.usda.gov/about-food/' },
   // Add more:
-  { url: 'https://your-source.gov/' },
+  { url: 'https://www.usda.gov/new-section/' },
 ],
 ```
 
-You can also adjust `crawlerConfiguration` (e.g. `rateLimit`, `scope`). After changes, redeploy and trigger a sync (Bedrock console or EventBridge-triggered job).
+To add a new data source, create a new `bedrock.CfnDataSource` following the same pattern as the existing ones. Remember to also add the new data source ID to the `KBSyncHandler` Lambda environment variables so it gets included in daily syncs.
+
+You can also adjust `crawlerConfiguration` (e.g. `rateLimit`, `scope`, `inclusionFilters`). After changes, redeploy and trigger a sync (Bedrock console or EventBridge-triggered job).
 
 ### Chunking and Ingestion
 
@@ -226,7 +236,7 @@ aws bedrock-agent start-ingestion-job \
   --data-source-id YOUR_DATA_SOURCE_ID
 ```
 
-Use `KnowledgeBaseId` and `WebCrawlerDataSourceId` from the CDK outputs.
+Use `KnowledgeBaseId` and the relevant data source ID (`UsdaGovDataSourceId`, `UsdaGov2DataSourceId`, or `FarmersGovDataSourceId`) from the CDK outputs.
 
 ---
 

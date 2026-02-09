@@ -81,7 +81,7 @@ Provide:
 
 - AWS Access Key ID  
 - AWS Secret Access Key  
-- Default region: `us-east-1` (recommended)  
+- Default region: `us-west-2` (recommended; Bedrock Knowledge Base web crawler is available here)  
 - Default output format: `json`  
 
 ---
@@ -190,7 +190,7 @@ The stack `AskUSDA-Backend` deploys:
 
 - DynamoDB (Conversation History, Escalation Requests)  
 - OpenSearch Serverless (vector store)  
-- Bedrock Knowledge Base (web crawler data source for usda.gov, farmers.gov)  
+- Bedrock Knowledge Base (three web crawler data sources for usda.gov and farmers.gov)  
 - Lambda (WebSocket handler, Admin API)  
 - API Gateway (WebSocket + HTTP Admin API)  
 - Cognito User Pool for admin authentication  
@@ -278,7 +278,9 @@ After a successful backend deployment, you can read these CloudFormation outputs
 | `ConversationTableName` | DynamoDB Conversation History table |
 | `EscalationTableName` | DynamoDB Escalation Requests table |
 | `KnowledgeBaseId` | Bedrock Knowledge Base ID |
-| `WebCrawlerDataSourceId` | Bedrock data source ID for the web crawler |
+| `UsdaGovDataSourceId` | Bedrock data source ID for usda.gov (trade, food, farming, forestry) |
+| `UsdaGov2DataSourceId` | Bedrock data source ID for usda.gov (sustainability, about) |
+| `FarmersGovDataSourceId` | Bedrock data source ID for farmers.gov |
 | `OpenSearchCollectionEndpoint` | OpenSearch Serverless collection endpoint |
 | `GuardrailId` | Bedrock Guardrail ID |
 | `AdminUserPoolId` | Cognito User Pool ID for admin |

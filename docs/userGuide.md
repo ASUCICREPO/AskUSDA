@@ -273,7 +273,7 @@ Authorized staff can sign in to the admin dashboard to view metrics, feedback, a
 The dashboard includes:
 
 - **Metrics**: Total conversations, conversations today, feedback counts (positive, negative, none), satisfaction rate, average response time, and conversations by day.
-- **Feedback**: List of conversations that have feedback. You can filter by positive, negative, or all, and open a row to see the full question, answer preview, and metadata.
+- **Feedback**: List of conversations that have feedback. You can filter by positive, negative, or all, and open a row to see the full question, answer preview, and metadata. You can **delete** a conversation from the feedback list when no longer needed.
 - **Escalations**: List of support/escalation requests (name, email, phone, question, date). You can view details and delete resolved requests.
 
 ### Viewing Conversation Details

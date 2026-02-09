@@ -33,7 +33,7 @@ https://[API_ID].execute-api.[REGION].amazonaws.com
 - No authentication. Clients connect and send messages; each connection is identified by `connectionId` (from API Gateway).
 
 ### HTTP Admin API
-- **Protected (Cognito JWT required):** `GET /metrics`, `GET /feedback`, `DELETE /escalations/{id}`. Send `Authorization: <Cognito IdToken>`.
+- **Protected (Cognito JWT required):** `GET /metrics`, `GET /feedback`, `GET /escalations`, `DELETE /escalations/{id}`, `DELETE /feedback/{id}`. Send `Authorization: <Cognito IdToken>`.
 - **Public (no auth):** `POST /feedback`, `POST /escalations` (used by the chatbot and escalation form).
 
 ### Headers (HTTP Admin API)
@@ -265,6 +265,16 @@ All responses are JSON. CORS is enabled.
 - **Path parameters:** `id` — the escalation ID (UUID).
 
 - **Response:** `200` with `{ "success": true }`. `404` if not found; `500` on server error.
+
+---
+
+#### DELETE /feedback/{id} — Delete conversation
+
+- **Purpose:** Delete a conversation and all its messages from the Conversation History table. **Cognito protected.**
+
+- **Path parameters:** `id` — the conversation ID (UUID).
+
+- **Response:** `200` with `{ "success": true, "deletedCount": N }` where `N` is the number of items deleted. `404` if conversation not found; `500` on server error.
 
 ---
 

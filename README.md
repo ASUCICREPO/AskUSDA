@@ -35,7 +35,7 @@ AskUSDA is an AI-powered chatbot that helps the public, farmers, and ranchers qu
 ### Key Features
 
 - **AI-Powered Conversations** using AWS Bedrock with Nova Pro
-- **Knowledge Base Integration** with USDA.gov and farmers.gov content (web pages and PDFs) via OpenSearch Serverless
+- **Knowledge Base Integration** with USDA.gov and farmers.gov content via three web crawler data sources and OpenSearch Serverless
 - **Real-time Streaming Responses** over WebSockets for a natural chat experience
 - **Citation Support** with source references for transparency
 - **Thumbs Up/Down Feedback** stored per message for analytics
@@ -104,8 +104,11 @@ For developers looking to extend or modify this project, see the [Modification G
 │   ├── app/
 │   │   ├── layout.tsx
 │   │   ├── page.tsx               # Main page with background and hover chatbot
-│   │   ├── admin/page.tsx         # Admin dashboard for metrics, feedback, escalations
+│   │   ├── admin/page.tsx         # Admin login page
+│   │   ├── dashboard/page.tsx     # Admin dashboard (metrics, feedback, escalations)
 │   │   ├── components/ChatBot.tsx # Hover-over chatbot UI and WebSocket client
+│   │   ├── context/
+│   │   │   └── AdminAuthContext.tsx # Cognito auth state for admin
 │   │   └── globals.css
 │   ├── public/
 │   │   ├── usda-bg.png            # USDA website background image
@@ -120,6 +123,8 @@ For developers looking to extend or modify this project, see the [Modification G
 │   └── media/
 │       ├── architecture.png
 │       └── user-interface.gif
+├── buildspec.yml                  # CodeBuild build spec (backend deploy + frontend build + Amplify upload)
+├── deploy.sh                      # One-command deployment script (IAM, Amplify, CodeBuild)
 ├── LICENSE
 └── README.md
 ```
