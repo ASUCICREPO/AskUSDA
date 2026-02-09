@@ -299,6 +299,38 @@ async function deleteEscalation(escalationId) {
   }
 }
 
+// Delete a conversation and all its messages
+async function deleteConversation(conversationId) {
+  try {
+    // Query all items with this conversationId (partition key)
+    const queryResult = await docClient.send(new QueryCommand({
+      TableName: CONVERSATION_TABLE,
+      KeyConditionExpression: 'conversationId = :cid',
+      ExpressionAttributeValues: { ':cid': conversationId },
+    }));
+
+    if (!queryResult.Items || queryResult.Items.length === 0) {
+      return { success: false, message: 'Conversation not found' };
+    }
+
+    // Delete each item (DynamoDB requires both partition key and sort key)
+    for (const item of queryResult.Items) {
+      await docClient.send(new DeleteCommand({
+        TableName: CONVERSATION_TABLE,
+        Key: {
+          conversationId: item.conversationId,
+          timestamp: item.timestamp,
+        },
+      }));
+    }
+
+    return { success: true, deletedCount: queryResult.Items.length };
+  } catch (error) {
+    console.error('Error deleting conversation:', error);
+    return { success: false, message: error.message };
+  }
+}
+
 // Create escalation (public endpoint)
 async function createEscalation(body) {
   const { name, email, phone, question, sessionId } = body;
@@ -431,6 +463,12 @@ exports.handler = async (event) => {
     if (path && path.startsWith('/escalations/') && httpMethod === 'DELETE') {
       const escalationId = pathParameters?.id || path.split('/').pop();
       const result = await deleteEscalation(escalationId);
+      return response(result.success ? 200 : 404, result);
+    }
+
+    if (path && path.startsWith('/feedback/') && httpMethod === 'DELETE') {
+      const conversationId = pathParameters?.id || path.split('/').pop();
+      const result = await deleteConversation(conversationId);
       return response(result.success ? 200 : 404, result);
     }
 

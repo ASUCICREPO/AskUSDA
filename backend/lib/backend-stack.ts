@@ -672,6 +672,13 @@ exports.handler = async (event) => {
       authorizer: jwtAuthorizer,
     });
 
+    adminApi.addRoutes({
+      path: '/feedback/{id}',
+      methods: [apigatewayv2.HttpMethod.DELETE],
+      integration: adminIntegration,
+      authorizer: jwtAuthorizer,
+    });
+
     // Public routes (no auth required - for submitting feedback/escalations from chatbot)
     adminApi.addRoutes({
       path: '/feedback',
