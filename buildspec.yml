@@ -54,8 +54,16 @@ phases:
   post_build:
     commands:
       - echo "Deploying frontend to Amplify..."
+      # Navigate to repo root first for consistent pathing
+      - cd $CODEBUILD_SRC_DIR
+      # Only deploy frontend if the build phase succeeded (out/ directory exists with build.zip)
+      - |
+        if [ ! -f "frontend/out/build.zip" ]; then
+          echo "ERROR: frontend/out/build.zip not found. Backend or frontend build likely failed."
+          echo "Skipping Amplify deployment."
+          exit 1
+        fi
       - echo "Creating Amplify deployment..."
-      - cd ..
       - aws amplify create-deployment --app-id $AMPLIFY_APP_ID --branch-name master --region $AWS_DEFAULT_REGION --output json > deployment_response.json
       - |
         if [ $? -ne 0 ]; then
@@ -67,8 +75,7 @@ phases:
       - export UPLOAD_URL=$(node -e "const data=require('./deployment_response.json'); console.log(data.zipUploadUrl)")
       - export JOB_ID=$(node -e "const data=require('./deployment_response.json'); console.log(data.jobId)")
       - echo "Uploading build.zip to Amplify..."
-      - cd out
-      - curl -X PUT -T build.zip "$UPLOAD_URL"
+      - curl -X PUT -T frontend/out/build.zip "$UPLOAD_URL"
       - |
         if [ $? -ne 0 ]; then
           echo "Failed to upload build.zip to Amplify"
