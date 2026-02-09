@@ -191,7 +191,7 @@ export class USDAChatbotStack extends cdk.Stack {
               maxPages: 25000,
               rateLimit: 300,
             },
-            scope: 'DEFAULT',
+            scope: 'HOST_ONLY',
             inclusionFilters: [
               'https://www\\.usda\\.gov/trade-and-markets(/.*)?$',
               'https://www\\.usda\\.gov/about-food(/.*)?$',
@@ -232,7 +232,7 @@ export class USDAChatbotStack extends cdk.Stack {
               maxPages: 25000,
               rateLimit: 300,
             },
-            scope: 'DEFAULT',
+            scope: 'HOST_ONLY',
             inclusionFilters: [
               'https://www\\.usda\\.gov/sustainability(/.*)?$',
               'https://www\\.usda\\.gov/about(/.*)?$',
@@ -270,7 +270,7 @@ export class USDAChatbotStack extends cdk.Stack {
               maxPages: 25000,
               rateLimit: 200,
             },
-            scope: 'DEFAULT',
+            scope: 'HOST_ONLY',
           },
         },
       },
