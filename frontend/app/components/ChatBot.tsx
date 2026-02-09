@@ -735,16 +735,7 @@ export default function ChatBot() {
                   className="h-full w-full"
                 />
               </div>
-              <div className="text-left">
-                <h3 className="font-semibold text-white">AskUSDA</h3>
-                <p className="text-xs text-white/80">
-                  {isConnecting
-                    ? "Connecting..."
-                    : isConnected
-                      ? "Online"
-                      : "Demo Mode"}
-                </p>
-              </div>
+              <h3 className="font-semibold text-white">AskUSDA</h3>
             </button>
             <div className="flex items-center gap-2">
               {/* Support button */}
@@ -818,7 +809,7 @@ export default function ChatBot() {
                     }`}
                   >
                     <div
-                      className={`prose prose-sm max-w-none overflow-wrap-anywhere ${
+                      className={`prose prose-sm max-w-none overflow-wrap-anywhere prose-ul:pl-4 prose-ol:pl-4 ${
                         message.sender === "user"
                           ? "prose-invert prose-p:text-white prose-a:text-blue-200"
                           : "prose-gray prose-a:text-[#002d72]"
@@ -849,13 +840,13 @@ export default function ChatBot() {
                           ),
                           // Style unordered lists with proper bullets
                           ul: ({ children }) => (
-                            <ul className="mb-2 ml-4 list-disc space-y-1 text-sm">
+                            <ul className="mb-2 ml-2 list-disc space-y-1 text-sm">
                               {children}
                             </ul>
                           ),
                           // Style ordered lists
                           ol: ({ children }) => (
-                            <ol className="mb-2 ml-4 list-decimal space-y-1 text-sm">
+                            <ol className="mb-2 ml-2 list-decimal space-y-1 text-sm">
                               {children}
                             </ol>
                           ),

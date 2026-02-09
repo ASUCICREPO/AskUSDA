@@ -320,9 +320,11 @@ while [ "$BUILD_STATUS" = "IN_PROGRESS" ]; do
         fi
       fi
       
-      # Show errors
+      # Show errors (skip echo statements that just contain error text)
       if [[ "$line" =~ "ERROR" ]] || [[ "$line" =~ "Error" ]] || [[ "$line" =~ "Failed" ]]; then
-        echo -e "${RED}[ERROR]${NC} $line"
+        if [[ ! "$line" =~ ^[[:space:]]*echo[[:space:]] ]]; then
+          echo -e "${RED}[ERROR]${NC} $line"
+        fi
       fi
       
       # Show success messages
