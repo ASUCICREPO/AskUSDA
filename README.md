@@ -12,6 +12,19 @@ AskUSDA is an intelligent AI-powered chatbot that helps the public, farmers, and
 
 ---
 
+## Demo Video
+
+Watch the complete demonstration of AskUSDA:
+
+<div align="center">
+  <a href="https://drive.google.com/file/d/1xnU1nZjxnDKQiq-Wtss3vza3UDiMUuM5/view?usp=sharing">
+    <img src="./docs/media/demo.png" alt="AskUSDA Demo" width="650">
+  </a>
+  <p><em>Click the image above to watch the demo (opens in Google Drive)</em></p>
+</div>
+
+---
+
 ## Table of Contents
 
 | Description           | Link                                                                 |
