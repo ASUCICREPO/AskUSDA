@@ -79,37 +79,360 @@ else
       --assume-role-policy-document "$TRUST_DOC" \
       --query 'Role.Arn' --output text)
 
-    print_status "Attaching custom deployment policy..."
-    CUSTOM_POLICY='{
+    print_status "Attaching scoped deployment policies..."
+
+    # --- Policy 1: CloudFormation + CDK Bootstrap ---
+    # CDK bootstrap and deploy need full CloudFormation access on the specific stack
+    # plus the CDKToolkit bootstrap stack, and S3/SSM/ECR for CDK staging assets.
+    CFN_POLICY='{
       "Version": "2012-10-17",
       "Statement": [
           {
-              "Sid": "FullDeploymentAccess",
+              "Sid": "CloudFormationDeploy",
               "Effect": "Allow",
               "Action": [
-                  "cloudformation:*",
-                  "iam:*",
-                  "lambda:*",
-                  "dynamodb:*",
-                  "s3:*",
-                  "bedrock:*",
-                  "amplify:*",
-                  "codebuild:*",
-                  "logs:*",
-                  "apigateway:*",
-                  "execute-api:*",
-                  "ssm:*",
-                  "events:*",
-                  "aoss:*",
-                  "secretsmanager:*",
-                  "ecr:*"
+                  "cloudformation:CreateStack",
+                  "cloudformation:UpdateStack",
+                  "cloudformation:DeleteStack",
+                  "cloudformation:DescribeStacks",
+                  "cloudformation:DescribeStackEvents",
+                  "cloudformation:DescribeStackResources",
+                  "cloudformation:GetTemplate",
+                  "cloudformation:GetTemplateSummary",
+                  "cloudformation:ListStacks",
+                  "cloudformation:CreateChangeSet",
+                  "cloudformation:DeleteChangeSet",
+                  "cloudformation:DescribeChangeSet",
+                  "cloudformation:ExecuteChangeSet",
+                  "cloudformation:ListChangeSets",
+                  "cloudformation:ValidateTemplate"
               ],
+              "Resource": [
+                  "arn:aws:cloudformation:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':stack/AskUSDA-Backend/*",
+                  "arn:aws:cloudformation:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':stack/CDKToolkit/*"
+              ]
+          },
+          {
+              "Sid": "CloudFormationReadGlobal",
+              "Effect": "Allow",
+              "Action": [
+                  "cloudformation:ListStacks",
+                  "cloudformation:GetTemplateSummary",
+                  "cloudformation:ValidateTemplate"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "CDKStagingBucket",
+              "Effect": "Allow",
+              "Action": [
+                  "s3:CreateBucket",
+                  "s3:PutBucketPolicy",
+                  "s3:PutBucketVersioning",
+                  "s3:PutEncryptionConfiguration",
+                  "s3:PutLifecycleConfiguration",
+                  "s3:PutBucketPublicAccessBlock",
+                  "s3:GetBucketLocation",
+                  "s3:GetBucketPolicy",
+                  "s3:ListBucket",
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject"
+              ],
+              "Resource": [
+                  "arn:aws:s3:::cdk-*-assets-'"$AWS_ACCOUNT_ID"'-'"$AWS_REGION"'",
+                  "arn:aws:s3:::cdk-*-assets-'"$AWS_ACCOUNT_ID"'-'"$AWS_REGION"'/*"
+              ]
+          },
+          {
+              "Sid": "CDKBootstrapSSM",
+              "Effect": "Allow",
+              "Action": [
+                  "ssm:GetParameter",
+                  "ssm:PutParameter",
+                  "ssm:GetParameters"
+              ],
+              "Resource": "arn:aws:ssm:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':parameter/cdk-bootstrap/*"
+          },
+          {
+              "Sid": "CDKBootstrapECR",
+              "Effect": "Allow",
+              "Action": [
+                  "ecr:CreateRepository",
+                  "ecr:DescribeRepositories",
+                  "ecr:SetRepositoryPolicy",
+                  "ecr:PutLifecyclePolicy",
+                  "ecr:GetLifecyclePolicy",
+                  "ecr:PutImage",
+                  "ecr:BatchGetImage",
+                  "ecr:GetDownloadUrlForLayer",
+                  "ecr:InitiateLayerUpload",
+                  "ecr:UploadLayerPart",
+                  "ecr:CompleteLayerUpload",
+                  "ecr:BatchCheckLayerAvailability",
+                  "ecr:GetAuthorizationToken"
+              ],
+              "Resource": "arn:aws:ecr:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':repository/cdk-*"
+          },
+          {
+              "Sid": "ECRAuthToken",
+              "Effect": "Allow",
+              "Action": "ecr:GetAuthorizationToken",
               "Resource": "*"
           },
           {
               "Sid": "STSAccess",
               "Effect": "Allow",
               "Action": ["sts:GetCallerIdentity", "sts:AssumeRole"],
+              "Resource": [
+                  "arn:aws:iam::'"$AWS_ACCOUNT_ID"':role/cdk-*"
+              ]
+          }
+      ]
+    }'
+
+    aws iam put-role-policy \
+      --role-name "$ROLE_NAME" \
+      --policy-name "CloudFormationAndCDKPolicy" \
+      --policy-document "$CFN_POLICY"
+
+    # --- Policy 2: IAM (scoped to CDK and stack roles only) ---
+    IAM_POLICY='{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "IAMRolesForStack",
+              "Effect": "Allow",
+              "Action": [
+                  "iam:CreateRole",
+                  "iam:DeleteRole",
+                  "iam:GetRole",
+                  "iam:UpdateRole",
+                  "iam:TagRole",
+                  "iam:UntagRole",
+                  "iam:PutRolePolicy",
+                  "iam:GetRolePolicy",
+                  "iam:DeleteRolePolicy",
+                  "iam:AttachRolePolicy",
+                  "iam:DetachRolePolicy",
+                  "iam:ListRolePolicies",
+                  "iam:ListAttachedRolePolicies",
+                  "iam:ListRoleTags",
+                  "iam:PassRole",
+                  "iam:CreateServiceLinkedRole"
+              ],
+              "Resource": [
+                  "arn:aws:iam::'"$AWS_ACCOUNT_ID"':role/AskUSDA-*",
+                  "arn:aws:iam::'"$AWS_ACCOUNT_ID"':role/cdk-*"
+              ]
+          },
+          {
+              "Sid": "IAMPolicyManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "iam:CreatePolicy",
+                  "iam:DeletePolicy",
+                  "iam:GetPolicy",
+                  "iam:CreatePolicyVersion",
+                  "iam:DeletePolicyVersion",
+                  "iam:ListPolicyVersions",
+                  "iam:GetPolicyVersion"
+              ],
+              "Resource": "arn:aws:iam::'"$AWS_ACCOUNT_ID"':policy/AskUSDA-*"
+          }
+      ]
+    }'
+
+    aws iam put-role-policy \
+      --role-name "$ROLE_NAME" \
+      --policy-name "IAMPolicy" \
+      --policy-document "$IAM_POLICY"
+
+    # --- Policy 3: Compute & Data (Lambda, DynamoDB, API Gateway, Cognito, Events) ---
+    COMPUTE_POLICY='{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "LambdaManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "lambda:CreateFunction",
+                  "lambda:DeleteFunction",
+                  "lambda:GetFunction",
+                  "lambda:GetFunctionConfiguration",
+                  "lambda:UpdateFunctionCode",
+                  "lambda:UpdateFunctionConfiguration",
+                  "lambda:AddPermission",
+                  "lambda:RemovePermission",
+                  "lambda:GetPolicy",
+                  "lambda:ListTags",
+                  "lambda:TagResource",
+                  "lambda:UntagResource",
+                  "lambda:PutFunctionEventInvokeConfig",
+                  "lambda:DeleteFunctionEventInvokeConfig",
+                  "lambda:GetFunctionEventInvokeConfig",
+                  "lambda:InvokeFunction",
+                  "lambda:PublishVersion",
+                  "lambda:CreateAlias",
+                  "lambda:DeleteAlias",
+                  "lambda:UpdateAlias"
+              ],
+              "Resource": "arn:aws:lambda:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':function:AskUSDA-*"
+          },
+          {
+              "Sid": "DynamoDBManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "dynamodb:CreateTable",
+                  "dynamodb:DeleteTable",
+                  "dynamodb:DescribeTable",
+                  "dynamodb:UpdateTable",
+                  "dynamodb:DescribeTimeToLive",
+                  "dynamodb:UpdateTimeToLive",
+                  "dynamodb:TagResource",
+                  "dynamodb:UntagResource",
+                  "dynamodb:ListTagsOfResource",
+                  "dynamodb:DescribeContinuousBackups"
+              ],
+              "Resource": [
+                  "arn:aws:dynamodb:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':table/AskUSDA-*"
+              ]
+          },
+          {
+              "Sid": "APIGatewayManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "apigateway:GET",
+                  "apigateway:POST",
+                  "apigateway:PUT",
+                  "apigateway:PATCH",
+                  "apigateway:DELETE",
+                  "apigateway:TagResource",
+                  "apigateway:UntagResource"
+              ],
+              "Resource": [
+                  "arn:aws:apigateway:'"$AWS_REGION"'::/*"
+              ]
+          },
+          {
+              "Sid": "CognitoManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "cognito-idp:CreateUserPool",
+                  "cognito-idp:DeleteUserPool",
+                  "cognito-idp:DescribeUserPool",
+                  "cognito-idp:UpdateUserPool",
+                  "cognito-idp:CreateUserPoolClient",
+                  "cognito-idp:DeleteUserPoolClient",
+                  "cognito-idp:DescribeUserPoolClient",
+                  "cognito-idp:UpdateUserPoolClient",
+                  "cognito-idp:TagResource",
+                  "cognito-idp:UntagResource",
+                  "cognito-idp:ListTagsForResource"
+              ],
+              "Resource": "arn:aws:cognito-idp:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':userpool/*"
+          },
+          {
+              "Sid": "EventBridgeManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "events:PutRule",
+                  "events:DeleteRule",
+                  "events:DescribeRule",
+                  "events:EnableRule",
+                  "events:DisableRule",
+                  "events:PutTargets",
+                  "events:RemoveTargets",
+                  "events:ListTargetsByRule",
+                  "events:TagResource",
+                  "events:UntagResource"
+              ],
+              "Resource": "arn:aws:events:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':rule/AskUSDA-*"
+          },
+          {
+              "Sid": "CloudWatchLogsManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "logs:CreateLogGroup",
+                  "logs:DeleteLogGroup",
+                  "logs:DescribeLogGroups",
+                  "logs:PutRetentionPolicy",
+                  "logs:DeleteRetentionPolicy",
+                  "logs:TagResource",
+                  "logs:UntagResource",
+                  "logs:ListTagsForResource",
+                  "logs:CreateLogStream",
+                  "logs:PutLogEvents",
+                  "logs:GetLogEvents",
+                  "logs:DescribeLogStreams"
+              ],
+              "Resource": [
+                  "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/aws/lambda/AskUSDA-*",
+                  "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/aws/codebuild/*"
+              ]
+          }
+      ]
+    }'
+
+    aws iam put-role-policy \
+      --role-name "$ROLE_NAME" \
+      --policy-name "ComputeAndDataPolicy" \
+      --policy-document "$COMPUTE_POLICY"
+
+    # --- Policy 4: AI & Search (Bedrock, OpenSearch Serverless) ---
+    AI_POLICY='{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "BedrockKnowledgeBase",
+              "Effect": "Allow",
+              "Action": [
+                  "bedrock:CreateKnowledgeBase",
+                  "bedrock:DeleteKnowledgeBase",
+                  "bedrock:GetKnowledgeBase",
+                  "bedrock:UpdateKnowledgeBase",
+                  "bedrock:CreateDataSource",
+                  "bedrock:DeleteDataSource",
+                  "bedrock:GetDataSource",
+                  "bedrock:UpdateDataSource",
+                  "bedrock:CreateGuardrail",
+                  "bedrock:DeleteGuardrail",
+                  "bedrock:GetGuardrail",
+                  "bedrock:UpdateGuardrail",
+                  "bedrock:ListGuardrails",
+                  "bedrock:CreateGuardrailVersion",
+                  "bedrock:TagResource",
+                  "bedrock:UntagResource",
+                  "bedrock:ListTagsForResource",
+                  "bedrock:GetFoundationModel",
+                  "bedrock:ListFoundationModels"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "OpenSearchServerless",
+              "Effect": "Allow",
+              "Action": [
+                  "aoss:CreateCollection",
+                  "aoss:DeleteCollection",
+                  "aoss:UpdateCollection",
+                  "aoss:BatchGetCollection",
+                  "aoss:ListCollections",
+                  "aoss:CreateSecurityPolicy",
+                  "aoss:DeleteSecurityPolicy",
+                  "aoss:UpdateSecurityPolicy",
+                  "aoss:GetSecurityPolicy",
+                  "aoss:ListSecurityPolicies",
+                  "aoss:CreateAccessPolicy",
+                  "aoss:DeleteAccessPolicy",
+                  "aoss:UpdateAccessPolicy",
+                  "aoss:GetAccessPolicy",
+                  "aoss:ListAccessPolicies",
+                  "aoss:APIAccessAll",
+                  "aoss:TagResource",
+                  "aoss:UntagResource",
+                  "aoss:ListTagsForResource"
+              ],
               "Resource": "*"
           }
       ]
@@ -117,8 +440,31 @@ else
 
     aws iam put-role-policy \
       --role-name "$ROLE_NAME" \
-      --policy-name "DeploymentPolicy" \
-      --policy-document "$CUSTOM_POLICY"
+      --policy-name "AIAndSearchPolicy" \
+      --policy-document "$AI_POLICY"
+
+    # --- Policy 5: Amplify Deployment (used in buildspec post_build) ---
+    AMPLIFY_POLICY='{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "AmplifyDeployment",
+              "Effect": "Allow",
+              "Action": [
+                  "amplify:CreateDeployment",
+                  "amplify:StartDeployment",
+                  "amplify:GetApp",
+                  "amplify:GetBranch"
+              ],
+              "Resource": "arn:aws:amplify:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':apps/'"$AMPLIFY_APP_ID"'/*"
+          }
+      ]
+    }'
+
+    aws iam put-role-policy \
+      --role-name "$ROLE_NAME" \
+      --policy-name "AmplifyDeploymentPolicy" \
+      --policy-document "$AMPLIFY_POLICY"
 
     print_success "IAM role created"
     print_status "Waiting for IAM role to propagate for 10 seconds..."

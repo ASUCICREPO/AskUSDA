@@ -114,10 +114,21 @@ export class USDAChatbotStack extends cdk.Stack {
       description: 'IAM role for AskUSDA Knowledge Base',
     });
 
-    // Grant full Bedrock access for Knowledge Base operations
+    // Bedrock KB needs to invoke the embedding model (Titan) for vectorization
+    // and the parsing model (Claude Haiku) for document parsing during ingestion
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:*'],
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+      ],
+    }));
+
+    // KB needs to list and describe foundation models during setup
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:ListFoundationModels', 'bedrock:GetFoundationModel'],
       resources: ['*'],
     }));
 
