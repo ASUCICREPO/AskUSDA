@@ -443,29 +443,6 @@ else
       --policy-name "AIAndSearchPolicy" \
       --policy-document "$AI_POLICY"
 
-    # --- Policy 5: Amplify Deployment (used in buildspec post_build) ---
-    AMPLIFY_POLICY='{
-      "Version": "2012-10-17",
-      "Statement": [
-          {
-              "Sid": "AmplifyDeployment",
-              "Effect": "Allow",
-              "Action": [
-                  "amplify:CreateDeployment",
-                  "amplify:StartDeployment",
-                  "amplify:GetApp",
-                  "amplify:GetBranch"
-              ],
-              "Resource": "arn:aws:amplify:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':apps/'"$AMPLIFY_APP_ID"'/*"
-          }
-      ]
-    }'
-
-    aws iam put-role-policy \
-      --role-name "$ROLE_NAME" \
-      --policy-name "AmplifyDeploymentPolicy" \
-      --policy-document "$AMPLIFY_POLICY"
-
     print_success "IAM role created"
     print_status "Waiting for IAM role to propagate for 10 seconds..."
     sleep 10
@@ -522,6 +499,35 @@ else
         --region "$AWS_REGION" || print_error "Failed to create Amplify branch."
     print_success "master branch created"
 fi
+
+# Attach Amplify deployment policy now that we have the app ID
+print_status "Attaching Amplify deployment policy for app: $AMPLIFY_APP_ID..."
+AMPLIFY_POLICY='{
+  "Version": "2012-10-17",
+  "Statement": [
+      {
+          "Sid": "AmplifyDeployment",
+          "Effect": "Allow",
+          "Action": [
+              "amplify:CreateDeployment",
+              "amplify:StartDeployment",
+              "amplify:GetApp",
+              "amplify:GetBranch"
+          ],
+          "Resource": [
+              "arn:aws:amplify:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':apps/'"$AMPLIFY_APP_ID"'",
+              "arn:aws:amplify:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':apps/'"$AMPLIFY_APP_ID"'/*"
+          ]
+      }
+  ]
+}'
+
+aws iam put-role-policy \
+  --role-name "$ROLE_NAME" \
+  --policy-name "AmplifyDeploymentPolicy" \
+  --policy-document "$AMPLIFY_POLICY"
+
+print_success "Amplify policy attached"
 
 # --- Phase 3: Create Unified CodeBuild Project ---
 print_codebuild "🏗️ Phase 3: Creating Unified CodeBuild Project..."
