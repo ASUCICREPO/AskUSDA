@@ -455,7 +455,7 @@ print_amplify "🌐 Phase 2: Creating Amplify Application for Static Hosting..."
 EXISTING_APP_ID=$(AWS_PAGER="" aws amplify list-apps --query "apps[?name=='$AMPLIFY_APP_NAME'].appId" --output text --region "$AWS_REGION")
 
 if [ -n "$EXISTING_APP_ID" ] && [ "$EXISTING_APP_ID" != "None" ]; then
-    print_warning "Amplify app '$AMPLIFY_APP_NAME' already exists with ID: $EXISTING_APP_ID"
+    print_warning "Amplify app '$AMPLIFY_APP_NAME' already exists"
     AMPLIFY_APP_ID=$EXISTING_APP_ID
 else
     # Create Amplify app for static hosting
@@ -473,7 +473,7 @@ else
         print_error "Failed to create Amplify app"
         exit 1
     fi
-    print_success "Amplify app created with ID: $AMPLIFY_APP_ID"
+    print_success "Amplify app created"
 fi
 
 # Check if main branch exists
@@ -501,7 +501,7 @@ else
 fi
 
 # Attach Amplify deployment policy now that we have the app ID
-print_status "Attaching Amplify deployment policy for app: $AMPLIFY_APP_ID..."
+print_status "Attaching Amplify deployment policy..."
 AMPLIFY_POLICY='{
   "Version": "2012-10-17",
   "Statement": [
@@ -592,11 +592,10 @@ if [ $? -ne 0 ]; then
   print_error "Failed to start the deployment build"
 fi
 
-print_success "Deployment build started successfully. Build ID: $BUILD_ID"
+print_success "Deployment build started successfully."
 
 # Stream logs
 print_status "Streaming deployment logs..."
-print_status "Build ID: $BUILD_ID"
 echo ""
 
 # Extract log group and stream from build ID
@@ -648,28 +647,23 @@ while [ "$BUILD_STATUS" = "IN_PROGRESS" ]; do
         continue
       fi
       
-      # Detect CDK output section start
+      # Detect CDK output section start — suppress output values (contain URLs/IDs)
       if [[ "$line" =~ "Outputs:" ]] || [[ "$line" =~ "Stack ARN:" ]]; then
         IN_CDK_OUTPUT_SECTION=true
-        echo -e "${GREEN}[CDK OUTPUT]${NC} $line"
+        echo -e "${GREEN}[CDK OUTPUT]${NC} Stack outputs generated (redacted from logs)"
         continue
       fi
       
-      # Show CDK outputs
+      # Skip CDK outputs entirely — they contain sensitive API URLs and resource IDs
       if [[ "$IN_CDK_OUTPUT_SECTION" == true ]]; then
-        # Stop showing when we hit the next phase
         if [[ "$line" =~ "Stack ARN:" ]] || \
            [[ "$line" =~ "CDK deployment complete" ]] || \
            [[ "$line" =~ "Extracting WebSocket URL" ]]; then
-          echo -e "${GREEN}[CDK OUTPUT]${NC} $line"
           IN_CDK_OUTPUT_SECTION=false
           continue
         fi
-        
-        # Show output lines (they typically start with "AskUSDA-Backend.")
-        if [[ "$line" =~ ^AskUSDA-Backend\. ]] || [[ "$line" =~ ^[[:space:]]*AskUSDA-Backend\. ]]; then
-          echo -e "${GREEN}[CDK OUTPUT]${NC} $line"
-        fi
+        # Silently skip all output lines
+        continue
       fi
       
       # Show errors (skip echo statements that just contain error text)
@@ -699,39 +693,11 @@ print_status "Deployment build status: $BUILD_STATUS"
 
 if [ "$BUILD_STATUS" != "SUCCEEDED" ]; then
   print_error "Deployment build failed with status: $BUILD_STATUS"
-  print_status "Check CodeBuild logs for details: https://console.aws.amazon.com/codesuite/codebuild/projects/$CODEBUILD_PROJECT_NAME/build/$BUILD_ID/"
+  print_status "Check CodeBuild logs in the AWS Console for details."
   exit 1
 fi
 
 print_success "Complete deployment finished successfully!"
-
-# Extract WebSocket URL from CloudFormation
-print_status "Extracting deployment information..."
-WEBSOCKET_URL=$(AWS_PAGER="" aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --query "Stacks[0].Outputs[?OutputKey==\`WebSocketUrl\`].OutputValue" \
-  --output text --region "$AWS_REGION")
-
-ADMIN_API_URL=$(AWS_PAGER="" aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --query "Stacks[0].Outputs[?OutputKey==\`AdminApiUrl\`].OutputValue" \
-  --output text --region "$AWS_REGION")
-
-if [ -z "$WEBSOCKET_URL" ] || [ "$WEBSOCKET_URL" = "None" ]; then
-  print_warning "Could not extract WebSocket URL from CDK outputs"
-  WEBSOCKET_URL="Check CloudFormation console"
-fi
-
-# Get Amplify URL
-AMPLIFY_URL=$(AWS_PAGER="" aws amplify get-app \
-    --app-id "$AMPLIFY_APP_ID" \
-    --query 'app.defaultDomain' \
-    --output text \
-    --region "$AWS_REGION")
-
-if [ -z "$AMPLIFY_URL" ] || [ "$AMPLIFY_URL" = "None" ]; then
-    AMPLIFY_URL="$AMPLIFY_APP_ID.amplifyapp.com"
-fi
 
 # --- Final Summary ---
 print_success "COMPLETE DEPLOYMENT SUCCESSFUL!"
@@ -740,10 +706,6 @@ echo "==========================================================================
 echo "                         DEPLOYMENT SUMMARY                               "
 echo "=========================================================================="
 echo ""
-echo "   WebSocket URL: $WEBSOCKET_URL"
-echo "   Admin API URL: $ADMIN_API_URL"
-echo "   Amplify App ID: $AMPLIFY_APP_ID"
-echo "   Frontend URL: https://master.$AMPLIFY_URL"
 echo "   CDK Stack: $STACK_NAME"
 echo "   AWS Region: $AWS_REGION"
 echo ""
@@ -757,6 +719,7 @@ echo "   - Bedrock Guardrails for content filtering"
 echo "   - Admin HTTP API for escalation management"
 echo "   - Frontend built and deployed to Amplify via CodeBuild"
 echo ""
-echo "Frontend URL: https://master.$AMPLIFY_URL"
+echo "To retrieve deployment URLs, run:"
+echo "   aws cloudformation describe-stacks --stack-name $STACK_NAME --query 'Stacks[0].Outputs' --output table --region $AWS_REGION"
 echo ""
 echo "=========================================================================="
