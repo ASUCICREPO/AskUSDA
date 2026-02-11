@@ -1,6 +1,6 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockAgentRuntimeClient, RetrieveCommand, RerankCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { v4: uuidv4 } = require('uuid');
@@ -77,7 +77,7 @@ async function retrieveFromKnowledgeBase(question) {
     },
     retrievalConfiguration: {
       vectorSearchConfiguration: {
-        numberOfResults: 5,
+        numberOfResults: 30, // Retrieve 30 results initially for re-ranking
       },
     },
   };
@@ -103,6 +103,78 @@ async function retrieveFromKnowledgeBase(question) {
       errorCode: error.$metadata?.httpStatusCode,
     });
     throw error;
+  }
+}
+
+// Step 1.5: Re-rank retrieved results using Amazon Rerank model
+async function rerankResults(question, retrievedResults) {
+  if (retrievedResults.length === 0) {
+    return [];
+  }
+
+  try {
+    // Prepare sources for re-ranking
+    const sources = retrievedResults.map((result, index) => ({
+      type: 'INLINE',
+      inlineDocumentSource: {
+        type: 'TEXT',
+        textDocument: {
+          text: result.content,
+        },
+      },
+    }));
+
+    const rerankParams = {
+      queries: [
+        {
+          type: 'TEXT',
+          textQuery: {
+            text: question,
+          },
+        },
+      ],
+      sources: sources,
+      rerankingConfiguration: {
+        type: 'BEDROCK_RERANKING_MODEL',
+        bedrockRerankingConfiguration: {
+          modelConfiguration: {
+            modelArn: 'arn:aws:bedrock:us-west-2::foundation-model/amazon.rerank-v1:0',
+          },
+          numberOfResults: 10, // Return top 10 after re-ranking
+        },
+      },
+    };
+
+    const response = await bedrockAgentClient.send(new RerankCommand(rerankParams));
+
+    // Map re-ranked results back to original results with new scores
+    const rerankedResults = response.results?.map((result, newIndex) => {
+      const originalIndex = result.index;
+      const originalResult = retrievedResults[originalIndex];
+      return {
+        id: newIndex + 1,
+        content: originalResult.content,
+        source: originalResult.source,
+        score: result.relevanceScore || originalResult.score,
+      };
+    }) || [];
+
+    console.log('Re-ranking complete:', {
+      originalCount: retrievedResults.length,
+      rerankedCount: rerankedResults.length,
+      topScore: rerankedResults[0]?.score,
+    });
+
+    return rerankedResults;
+  } catch (error) {
+    console.error('Re-rank error:', {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: error.$metadata?.httpStatusCode,
+    });
+    // Fall back to original results (top 10) if re-ranking fails
+    console.log('Falling back to original retrieval results');
+    return retrievedResults.slice(0, 10);
   }
 }
 
@@ -136,7 +208,7 @@ Answer:`;
     ],
     inferenceConfig: {
       maxTokens: 2048,
-      temperature: 0.7,
+      temperature: 0.4,
       topP: 0.9,
     },
   };
@@ -164,20 +236,23 @@ Answer:`;
   }
 }
 
-// Combined: Query Knowledge Base with two-step approach
+// Combined: Query Knowledge Base with two-step approach (retrieve + rerank + generate)
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
 
-  // Step 1: Retrieve with confidence scores
+  // Step 1: Retrieve with confidence scores (30 results)
   const retrievedResults = await retrieveFromKnowledgeBase(question);
   
-  // Calculate max confidence score
-  const maxConfidence = retrievedResults.length > 0 
-    ? Math.max(...retrievedResults.map(r => r.score)) 
+  // Step 1.5: Re-rank results to get top 10
+  const rerankedResults = await rerankResults(question, retrievedResults);
+  
+  // Calculate max confidence score from re-ranked results
+  const maxConfidence = rerankedResults.length > 0 
+    ? Math.max(...rerankedResults.map(r => r.score)) 
     : 0;
 
   // Confidence threshold - responses below this won't be shown
-  const CONFIDENCE_THRESHOLD = 0.5;
+  const CONFIDENCE_THRESHOLD = 0.6;
 
   // If confidence is too low, don't generate - return early with NO citations
   if (maxConfidence < CONFIDENCE_THRESHOLD) {
@@ -191,12 +266,12 @@ async function queryKnowledgeBase(question, sessionId) {
     };
   }
 
-  // Step 2: Generate answer using retrieved context
-  const answer = await generateAnswer(question, retrievedResults);
+  // Step 2: Generate answer using re-ranked context
+  const answer = await generateAnswer(question, rerankedResults);
   const responseTimeMs = Date.now() - startTime;
 
-  // Build citations from retrieved results
-  const citations = retrievedResults.map(r => ({
+  // Build citations from re-ranked results
+  const citations = rerankedResults.map(r => ({
     id: r.id,
     text: r.content.substring(0, 200),
     source: r.source,
