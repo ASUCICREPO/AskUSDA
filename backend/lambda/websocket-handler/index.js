@@ -25,8 +25,6 @@ async function sendToClient(connectionId, data) {
   // Format: https://{api-id}.execute-api.{region}.amazonaws.com/{stage}
   const endpoint = WEBSOCKET_ENDPOINT.replace('wss://', 'https://');
   
-  console.log('Sending to client, endpoint:', endpoint, 'connectionId:', connectionId);
-  
   const apiGatewayClient = new ApiGatewayManagementApiClient({
     endpoint: endpoint,
   });
@@ -38,9 +36,6 @@ async function sendToClient(connectionId, data) {
     }));
   } catch (error) {
     console.error('Error sending to client:', error);
-    if (error.statusCode === 410) {
-      console.log('Client disconnected');
-    }
     throw error;
   }
 }
@@ -75,10 +70,6 @@ async function applyGuardrails(text) {
 
 // Step 1: Retrieve relevant chunks from Knowledge Base with confidence scores
 async function retrieveFromKnowledgeBase(question) {
-  console.log('=== STEP 1: RETRIEVING FROM KNOWLEDGE BASE ===');
-  console.log('Question:', question);
-  console.log('Knowledge Base ID:', KNOWLEDGE_BASE_ID);
-
   const params = {
     knowledgeBaseId: KNOWLEDGE_BASE_ID,
     retrievalQuery: {
@@ -93,39 +84,16 @@ async function retrieveFromKnowledgeBase(question) {
 
   try {
     const response = await bedrockAgentClient.send(new RetrieveCommand(params));
-    
-    console.log('Retrieve response received:', {
-      resultsCount: response.retrievalResults?.length || 0,
-    });
 
     // Extract results with confidence scores
-    const results = response.retrievalResults?.map((result, index) => {
-      console.log(`Result ${index + 1}:`, {
-        score: result.score,
-        scoreType: typeof result.score,
-        location: result.location?.s3Location?.uri || result.location?.webLocation?.url || 'Unknown',
-        contentPreview: result.content?.text?.substring(0, 200) + '...',
-      });
-
-      return {
-        id: index + 1,
-        content: result.content?.text || '',
-        source: result.location?.webLocation?.url || 
-                result.location?.s3Location?.uri || 
-                'Unknown source',
-        score: result.score || 0,
-      };
-    }) || [];
-
-    // Log all scores for debugging
-    console.log('=== CONFIDENCE SCORES FROM RETRIEVE ===');
-    results.forEach((r, i) => {
-      console.log(`  Result ${i + 1}: score=${r.score}, source=${r.source.substring(0, 60)}...`);
-    });
-    
-    const maxScore = results.length > 0 ? Math.max(...results.map(r => r.score)) : 0;
-    console.log('Maximum confidence score:', maxScore);
-    console.log('=== END RETRIEVE ===');
+    const results = response.retrievalResults?.map((result, index) => ({
+      id: index + 1,
+      content: result.content?.text || '',
+      source: result.location?.webLocation?.url || 
+              result.location?.s3Location?.uri || 
+              'Unknown source',
+      score: result.score || 0,
+    })) || [];
 
     return results;
   } catch (error) {
@@ -140,8 +108,6 @@ async function retrieveFromKnowledgeBase(question) {
 
 // Step 2: Generate answer using retrieved context
 async function generateAnswer(question, retrievedResults) {
-  console.log('=== STEP 2: GENERATING ANSWER ===');
-  
   // Build context from retrieved results
   const context = retrievedResults
     .map((r, i) => `[Source ${i + 1}]: ${r.content}`)
@@ -158,10 +124,7 @@ User Question: ${question}
 
 Answer:`;
 
-  console.log('Prompt length:', prompt.length);
-
   // Use Amazon Nova Pro via inference profile
-  const region = process.env.AWS_REGION || 'us-west-2';
   const modelId = `us.amazon.nova-pro-v1:0`;
   
   const requestBody = {
@@ -178,8 +141,6 @@ Answer:`;
     },
   };
 
-  console.log('Using model ID:', modelId);
-
   try {
     const response = await bedrockRuntimeClient.send(new InvokeModelCommand({
       modelId: modelId,
@@ -192,9 +153,6 @@ Answer:`;
     const answer = responseBody.output?.message?.content?.[0]?.text || 
                    responseBody.content?.[0]?.text ||
                    "I couldn't generate a response. Please try again.";
-
-    console.log('Generated answer length:', answer.length);
-    console.log('=== END GENERATION ===');
 
     return answer;
   } catch (error) {
@@ -220,12 +178,6 @@ async function queryKnowledgeBase(question, sessionId) {
 
   // Confidence threshold - responses below this won't be shown
   const CONFIDENCE_THRESHOLD = 0.5;
-
-  console.log('=== CONFIDENCE CHECK ===');
-  console.log('Max confidence score:', maxConfidence);
-  console.log('Threshold:', CONFIDENCE_THRESHOLD);
-  console.log('Passes threshold:', maxConfidence >= CONFIDENCE_THRESHOLD);
-  console.log('========================');
 
   // If confidence is too low, don't generate - return early with NO citations
   if (maxConfidence < CONFIDENCE_THRESHOLD) {
@@ -321,21 +273,6 @@ async function handleSendMessage(connectionId, body) {
     
     // Generate conversation ID (but don't save yet - only save when feedback is given)
     const conversationId = uuidv4();
-
-    // Detailed confidence logging for manual verification
-    console.log('=== FINAL CONFIDENCE SCORE CHECK ===');
-    console.log('User Question:', message);
-    console.log('Number of citations:', result.citations.length);
-    console.log('Individual citation scores:', result.citations.map((c, i) => ({
-      citation: i + 1,
-      score: c.score,
-      source: c.source?.substring(0, 80) + '...'
-    })));
-    console.log('Maximum confidence score:', result.maxConfidence);
-    console.log('Threshold:', 0.8);
-    console.log('Is high confidence (>= 0.8)?:', result.maxConfidence >= 0.8);
-    console.log('Decision:', result.lowConfidence ? 'SHOW LOW CONFIDENCE MESSAGE' : 'SHOW RESPONSE');
-    console.log('=== END FINAL CHECK ===');
 
     if (result.lowConfidence) {
       // Low confidence - suggest user to visit usda.gov or contact support
@@ -475,19 +412,15 @@ async function handleSubmitEscalation(connectionId, body) {
 
 // Main handler
 exports.handler = async (event) => {
-  console.log('Event:', JSON.stringify(event, null, 2));
-
   const { requestContext, body } = event;
   const { connectionId, routeKey } = requestContext;
 
   try {
     switch (routeKey) {
       case '$connect':
-        console.log('Client connected:', connectionId);
         return { statusCode: 200, body: 'Connected' };
 
       case '$disconnect':
-        console.log('Client disconnected:', connectionId);
         return { statusCode: 200, body: 'Disconnected' };
 
       case 'sendMessage':

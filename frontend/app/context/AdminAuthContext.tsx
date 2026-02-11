@@ -21,7 +21,6 @@ interface AdminAuthContextType {
 const AdminAuthContext = createContext<AdminAuthContextType | undefined>(undefined);
 
 // Get Cognito config from environment
-const COGNITO_USER_POOL_ID = process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID || '';
 const COGNITO_CLIENT_ID = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID || '';
 const AWS_REGION = process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1';
 
@@ -61,7 +60,6 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
           setUser(parsed);
         } else {
           // Token expired, clear storage
-          console.log('Stored token expired, clearing session');
           localStorage.removeItem('adminUser');
         }
       } catch {

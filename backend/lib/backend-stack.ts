@@ -329,9 +329,6 @@ const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/clien
 const client = new BedrockAgentClient({});
 
 exports.handler = async (event) => {
-  console.log('Starting Knowledge Base sync jobs for all data sources...');
-  console.log('Event:', JSON.stringify(event, null, 2));
-  
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
   const dataSourceIds = [
     process.env.DATA_SOURCE_ID_USDAGOV,
@@ -343,13 +340,11 @@ exports.handler = async (event) => {
   
   for (const dataSourceId of dataSourceIds) {
     try {
-      console.log('Starting ingestion for data source:', dataSourceId);
       const response = await client.send(new StartIngestionJobCommand({
         knowledgeBaseId,
         dataSourceId,
       }));
       
-      console.log('Ingestion job started for', dataSourceId, ':', JSON.stringify(response, null, 2));
       results.push({
         dataSourceId,
         status: 'started',

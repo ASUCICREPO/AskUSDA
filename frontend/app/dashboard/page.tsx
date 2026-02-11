@@ -14,12 +14,6 @@ interface EscalationRequest {
   requestDate: string;
 }
 
-interface ConversationMessage {
-  role: "user" | "bot";
-  content: string;
-  timestamp: string;
-}
-
 interface Citation {
   id: number;
   text: string;
@@ -306,8 +300,6 @@ export default function AdminPage() {
       console.error("Error deleting conversation:", err);
     }
   };
-
-  const filteredRequests = escalationRequests;
 
   // filteredFeedback is now handled server-side, so we use feedbackConversations directly
 
@@ -807,14 +799,14 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredRequests.length === 0 ? (
+                {escalationRequests.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center">
                       <p className="text-sm text-gray-500">No escalation requests yet</p>
                     </td>
                   </tr>
                 ) : (
-                  filteredRequests.map((request) => (
+                  escalationRequests.map((request) => (
                     <tr key={request.id} className="transition-colors hover:bg-gray-50">
                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="flex items-center gap-3">

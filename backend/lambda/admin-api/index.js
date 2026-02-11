@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, QueryCommand, ScanCommand, DeleteCommand, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, QueryCommand, ScanCommand, DeleteCommand, PutCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
 const { v4: uuidv4 } = require('uuid');
 
 // Initialize clients
@@ -204,6 +204,7 @@ async function getFeedbackConversations(limit = 50, offset = 0, feedbackFilter =
       try {
         citations = conv.citations ? JSON.parse(conv.citations) : [];
       } catch (e) {
+        console.error('Error parsing citations JSON:', e);
         citations = [];
       }
       
@@ -393,7 +394,6 @@ async function createFeedback(body) {
 
     const item = queryResult.Items[0];
     
-    const { UpdateCommand } = require('@aws-sdk/lib-dynamodb');
     await docClient.send(new UpdateCommand({
       TableName: CONVERSATION_TABLE,
       Key: {
@@ -416,8 +416,6 @@ async function createFeedback(body) {
 
 // Main handler
 exports.handler = async (event) => {
-  console.log('Event:', JSON.stringify(event, null, 2));
-
   // HTTP API v2 uses different event structure
   const httpMethod = event.requestContext?.http?.method || event.httpMethod;
   const path = event.rawPath || event.path;

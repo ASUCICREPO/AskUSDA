@@ -340,12 +340,10 @@ export default function ChatBot() {
     }
 
     setIsConnecting(true);
-    console.log("Connecting to WebSocket:", WEBSOCKET_URL);
 
     const ws = new WebSocket(WEBSOCKET_URL);
 
     ws.onopen = () => {
-      console.log("WebSocket connected");
       setIsConnected(true);
       setIsConnecting(false);
     };
@@ -366,7 +364,6 @@ export default function ChatBot() {
     };
 
     ws.onclose = () => {
-      console.log("WebSocket disconnected");
       setIsConnected(false);
       setIsConnecting(false);
       wsRef.current = null;
@@ -396,23 +393,6 @@ export default function ChatBot() {
         break;
 
       case "message":
-        // Log confidence scores to Chrome console for debugging
-        console.log('=== CONFIDENCE SCORE CHECK ===');
-        console.log('Message received from backend:', data);
-        console.log('Max confidence score:', data.maxConfidence);
-        console.log('Low confidence flag:', data.lowConfidence);
-        console.log('Citations received:', data.citations);
-        if (data.citations && data.citations.length > 0) {
-          console.log('Individual citation scores:', data.citations.map((c: Citation, i: number) => ({
-            citation: i + 1,
-            score: c.score,
-            source: c.source
-          })));
-        }
-        console.log('Threshold: 0.8');
-        console.log('Decision:', data.lowConfidence ? 'LOW CONFIDENCE MESSAGE SHOWN' : 'ACTUAL RESPONSE SHOWN');
-        console.log('=== END CONFIDENCE CHECK ===');
-
         // Complete message with all data
         const messageId = streamingMessageIdRef.current || Date.now().toString();
         setMessages((prev) => {
@@ -539,7 +519,7 @@ export default function ChatBot() {
         break;
 
       case "feedbackConfirmation":
-        console.log("Feedback confirmed:", data.feedback, "for", data.conversationId);
+        // Feedback confirmed successfully
         break;
 
       case "escalationConfirmation":
