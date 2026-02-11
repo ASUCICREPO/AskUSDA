@@ -11,10 +11,11 @@ const CONVERSATION_TABLE = process.env.CONVERSATION_TABLE;
 const ESCALATION_TABLE = process.env.ESCALATION_TABLE;
 const DATE_INDEX = process.env.DATE_INDEX || 'date-timestamp-index';
 const FEEDBACK_INDEX = process.env.FEEDBACK_INDEX || 'feedback-timestamp-index';
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
 // CORS headers
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   'Content-Type': 'application/json',

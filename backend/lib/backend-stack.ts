@@ -16,6 +16,13 @@ export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // ==================== Amplify App ID (from CDK context) ====================
+    // Used to construct the frontend origin URL for CORS
+    const amplifyAppId = this.node.tryGetContext('amplifyAppId') || '';
+    const frontendOrigin = amplifyAppId
+      ? `https://master.${amplifyAppId}.amplifyapp.com`
+      : '*'; // Fallback to wildcard only if no Amplify app ID provided
+
     // ==================== DynamoDB - Conversation History ====================
     // Table to store conversation history for analytics and admin dashboard
     const conversationHistoryTable = new dynamodb.Table(this, 'ConversationHistory', {
@@ -515,6 +522,10 @@ exports.handler = async (event) => {
       webSocketApi,
       stageName: 'prod',
       autoDeploy: true,
+      throttle: {
+        rateLimit: 10,   // 10 requests per second per client
+        burstLimit: 20,  // Allow short bursts up to 20
+      },
     });
 
     webSocketHandler.addEnvironment('WEBSOCKET_ENDPOINT', webSocketStage.callbackUrl);
@@ -619,10 +630,17 @@ exports.handler = async (event) => {
         ESCALATION_TABLE: escalationTable.tableName,
         DATE_INDEX: 'date-timestamp-index',
         FEEDBACK_INDEX: 'feedback-timestamp-index',
+        ALLOWED_ORIGIN: frontendOrigin,
       },
     });
 
     // ==================== Admin HTTP API Gateway ====================
+    // Build allowed origins list: always include the Amplify frontend,
+    // and optionally localhost for development
+    const allowedOrigins = frontendOrigin !== '*'
+      ? [frontendOrigin]
+      : ['*']; // Only wildcard if amplifyAppId wasn't provided
+
     const adminApi = new apigatewayv2.HttpApi(this, 'AdminApi', {
       apiName: 'AskUSDA-AdminAPI',
       description: 'HTTP API for AskUSDA Admin Dashboard',
@@ -634,7 +652,7 @@ exports.handler = async (event) => {
           apigatewayv2.CorsHttpMethod.DELETE,
           apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
-        allowOrigins: ['*'],
+        allowOrigins: allowedOrigins,
         maxAge: cdk.Duration.days(1),
       },
     });
