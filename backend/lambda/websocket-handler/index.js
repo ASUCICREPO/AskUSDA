@@ -148,6 +148,7 @@ async function rerankResults(question, retrievedResults) {
     const response = await bedrockAgentClient.send(new RerankCommand(rerankParams));
 
     // Map re-ranked results back to original results with new scores
+  
     const rerankedResults = response.results?.map((result, newIndex) => {
       const originalIndex = result.index;
       const originalResult = retrievedResults[originalIndex];
@@ -155,14 +156,16 @@ async function rerankResults(question, retrievedResults) {
         id: newIndex + 1,
         content: originalResult.content,
         source: originalResult.source,
-        score: result.relevanceScore || originalResult.score,
+        score: originalResult.score, 
+        rerankScore: result.relevanceScore, 
       };
     }) || [];
 
     console.log('Re-ranking complete:', {
       originalCount: retrievedResults.length,
       rerankedCount: rerankedResults.length,
-      topScore: rerankedResults[0]?.score,
+      topVectorScore: rerankedResults[0]?.score,
+      topRerankScore: rerankedResults[0]?.rerankScore,
     });
 
     return rerankedResults;
@@ -236,41 +239,44 @@ Answer:`;
   }
 }
 
-// Combined: Query Knowledge Base with two-step approach (retrieve + rerank + generate)
+// Combined: Query Knowledge Base with three-step approach (retrieve + rerank + generate)
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
 
   // Step 1: Retrieve with confidence scores (30 results)
   const retrievedResults = await retrieveFromKnowledgeBase(question);
   
-  // Step 1.5: Re-rank results to get top 10
-  const rerankedResults = await rerankResults(question, retrievedResults);
-  
-  // Calculate max confidence score from re-ranked results
-  const maxConfidence = rerankedResults.length > 0 
-    ? Math.max(...rerankedResults.map(r => r.score)) 
+  // Calculate max confidence from original vector search (before reranking)
+  // This is used for the confidence threshold check
+  const maxVectorConfidence = retrievedResults.length > 0 
+    ? Math.max(...retrievedResults.map(r => r.score)) 
     : 0;
 
   // Confidence threshold - responses below this won't be shown
-  const CONFIDENCE_THRESHOLD = 0.6;
+  // Based on original vector search scores (0-1 scale)
+  const CONFIDENCE_THRESHOLD = 0.5;
 
   // If confidence is too low, don't generate - return early with NO citations
-  if (maxConfidence < CONFIDENCE_THRESHOLD) {
+  if (maxVectorConfidence < CONFIDENCE_THRESHOLD) {
     const responseTimeMs = Date.now() - startTime;
+    console.log('Low confidence - skipping generation:', { maxVectorConfidence, threshold: CONFIDENCE_THRESHOLD });
     return {
       answer: null,
-      citations: [], // Don't return citations for low confidence
-      maxConfidence,
+      citations: [],
+      maxConfidence: maxVectorConfidence,
       responseTimeMs,
       lowConfidence: true,
     };
   }
 
+  // Step 1.5: Re-rank results to get top 10 (only if confidence is sufficient)
+  const rerankedResults = await rerankResults(question, retrievedResults);
+
   // Step 2: Generate answer using re-ranked context
   const answer = await generateAnswer(question, rerankedResults);
   const responseTimeMs = Date.now() - startTime;
 
-  // Build citations from re-ranked results
+  // Build citations from re-ranked results (use vector score for display)
   const citations = rerankedResults.map(r => ({
     id: r.id,
     text: r.content.substring(0, 200),
@@ -281,8 +287,8 @@ async function queryKnowledgeBase(question, sessionId) {
   return {
     answer,
     citations,
-    maxConfidence,
-    sessionId: sessionId || uuidv4(), // Generate new session ID if not provided
+    maxConfidence: maxVectorConfidence,
+    sessionId: sessionId || uuidv4(),
     responseTimeMs,
     lowConfidence: false,
   };
