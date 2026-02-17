@@ -304,7 +304,15 @@ export class USDAChatbotStack extends cdk.Stack {
     farmersGovDataSource.addDependency(knowledgeBase);
 
     // ==================== Daily Knowledge Base Sync (EventBridge + Lambda) ====================
-    // Lambda function to trigger KB sync
+    // Each data source is triggered by its own EventBridge rule, staggered 1 hour apart.
+    // Bedrock does not allow concurrent ingestion jobs on the same Knowledge Base,
+    // so spacing them out avoids ConflictException errors.
+    //
+    // Schedule (all times UTC, off-peak US hours):
+    //   4:00 AM UTC (8 PM PST / 11 PM EST) → farmersgov
+    //   5:00 AM UTC (9 PM PST / 12 AM EST) → usdagov2
+    //   6:00 AM UTC (10 PM PST / 1 AM EST) → usdagov
+
     const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
@@ -312,13 +320,14 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     });
 
-    // Grant permission to start ingestion job
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:StartIngestionJob'],
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
+    // Lambda handles a single data source per invocation.
+    // The data source name is passed via the EventBridge event input.
     const kbSyncHandler = new lambda.Function(this, 'KBSyncHandler', {
       functionName: 'AskUSDA-KBSyncHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -329,44 +338,50 @@ const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/clien
 const client = new BedrockAgentClient({});
 
 exports.handler = async (event) => {
+  console.log('Event:', JSON.stringify(event, null, 2));
+
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
-  const dataSourceIds = [
-    process.env.DATA_SOURCE_ID_USDAGOV,
-    process.env.DATA_SOURCE_ID_USDAGOV2,
-    process.env.DATA_SOURCE_ID_FARMERSGOV,
-  ].filter(Boolean);
-  
-  const results = [];
-  
-  for (const dataSourceId of dataSourceIds) {
-    try {
-      const response = await client.send(new StartIngestionJobCommand({
-        knowledgeBaseId,
-        dataSourceId,
-      }));
-      
-      results.push({
+  const dataSourceName = event.dataSourceName;
+
+  if (!dataSourceName) {
+    throw new Error('Missing dataSourceName in event input');
+  }
+
+  const dataSourceEnvMap = {
+    farmersgov: process.env.DATA_SOURCE_ID_FARMERSGOV,
+    usdagov2: process.env.DATA_SOURCE_ID_USDAGOV2,
+    usdagov: process.env.DATA_SOURCE_ID_USDAGOV,
+  };
+
+  const dataSourceId = dataSourceEnvMap[dataSourceName];
+  if (!dataSourceId) {
+    throw new Error('Unknown or unconfigured data source: ' + dataSourceName);
+  }
+
+  console.log('Starting ingestion for data source:', dataSourceName, '(' + dataSourceId + ')');
+
+  try {
+    const response = await client.send(new StartIngestionJobCommand({
+      knowledgeBaseId,
+      dataSourceId,
+    }));
+
+    const jobId = response.ingestionJob?.ingestionJobId;
+    console.log('Successfully started ingestion for', dataSourceName, '- job ID:', jobId);
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        dataSourceName,
         dataSourceId,
         status: 'started',
-        ingestionJobId: response.ingestionJob?.ingestionJobId,
-      });
-    } catch (error) {
-      console.error('Error starting ingestion job for', dataSourceId, ':', error);
-      results.push({
-        dataSourceId,
-        status: 'error',
-        error: error.message,
-      });
-    }
+        ingestionJobId: jobId,
+      }),
+    };
+  } catch (error) {
+    console.error('Error starting ingestion for', dataSourceName, '(' + dataSourceId + '):', error.name, '-', error.message);
+    throw error;
   }
-  
-  return {
-    statusCode: 200,
-    body: JSON.stringify({
-      message: 'Knowledge Base sync initiated for all data sources',
-      results,
-    }),
-  };
 };
       `),
       role: kbSyncLambdaRole,
@@ -380,23 +395,31 @@ exports.handler = async (event) => {
       },
     });
 
-    // EventBridge rule to trigger daily at 6:00 AM UTC (off-peak hours)
-    // This is ~11 PM PST / 2 AM EST - good for US government sites
-    const dailySyncRule = new events.Rule(this, 'DailyKBSyncRule', {
-      ruleName: 'AskUSDA-DailyKBSync',
-      description: 'Triggers daily Knowledge Base sync at 6:00 AM UTC',
-      schedule: events.Schedule.cron({
-        minute: '0',
-        hour: '6',
-        day: '*',
-        month: '*',
-        year: '*',
-      }),
-    });
+    // Staggered EventBridge rules — one per data source, 1 hour apart
+    const syncSchedule = [
+      { id: 'FarmersGov', name: 'farmersgov', hour: '4', description: 'farmersgov sync at 4:00 AM UTC' },
+      { id: 'UsdaGov2',   name: 'usdagov2',   hour: '5', description: 'usdagov2 sync at 5:00 AM UTC' },
+      { id: 'UsdaGov',    name: 'usdagov',     hour: '6', description: 'usdagov sync at 6:00 AM UTC' },
+    ];
 
-    dailySyncRule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
-      retryAttempts: 2,
-    }));
+    for (const ds of syncSchedule) {
+      const rule = new events.Rule(this, `DailyKBSync${ds.id}Rule`, {
+        ruleName: `AskUSDA-DailyKBSync-${ds.name}`,
+        description: `Triggers daily Knowledge Base ${ds.description}`,
+        schedule: events.Schedule.cron({
+          minute: '0',
+          hour: ds.hour,
+          day: '*',
+          month: '*',
+          year: '*',
+        }),
+      });
+
+      rule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
+        retryAttempts: 2,
+        event: events.RuleTargetInput.fromObject({ dataSourceName: ds.name }),
+      }));
+    }
 
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
