@@ -466,6 +466,22 @@ exports.handler = async (event) => {
       ],
     }));
 
+    // Bedrock Rerank permissions (required for RerankCommand in RAG pipeline)
+    // bedrock:Rerank is the API action, bedrock:InvokeModel is needed for the reranker foundation model
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:Rerank'],
+      resources: ['*'],
+    }));
+
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`,
+      ],
+    }));
+
     // OpenSearch Serverless permissions
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,

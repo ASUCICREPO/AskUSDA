@@ -77,27 +77,45 @@ async function retrieveFromKnowledgeBase(question) {
     },
     retrievalConfiguration: {
       vectorSearchConfiguration: {
-        numberOfResults: 30, // Retrieve 30 results initially for re-ranking
+        numberOfResults: 15, // Retrieve 15 results initially for re-ranking
+        overrideSearchType: 'HYBRID', // Use hybrid search (vector + keyword) for better relevance
       },
     },
   };
 
   try {
+    const retrieveStart = Date.now();
     const response = await bedrockAgentClient.send(new RetrieveCommand(params));
 
     // Extract results with confidence scores
     const results = response.retrievalResults?.map((result, index) => ({
       id: index + 1,
       content: result.content?.text || '',
-      source: result.location?.webLocation?.url || 
-              result.location?.s3Location?.uri || 
+      source: result.location?.webLocation?.url ||
+              result.location?.s3Location?.uri ||
               'Unknown source',
       score: result.score || 0,
     })) || [];
 
+    const retrieveMs = Date.now() - retrieveStart;
+    console.log('[RETRIEVE] Completed:', {
+      durationMs: retrieveMs,
+      totalResults: results.length,
+      scoreRange: results.length > 0
+        ? { highest: results[0]?.score, lowest: results[results.length - 1]?.score }
+        : null,
+    });
+    // Log all 30 retrieved chunks with source and score
+    console.log('[RETRIEVE] All chunks:', JSON.stringify(results.map(r => ({
+      id: r.id,
+      score: r.score,
+      source: r.source,
+      preview: r.content.substring(0, 150),
+    })), null, 2));
+
     return results;
   } catch (error) {
-    console.error('Retrieve error:', {
+    console.error('[RETRIEVE] Error:', {
       errorName: error.name,
       errorMessage: error.message,
       errorCode: error.$metadata?.httpStatusCode,
@@ -114,7 +132,7 @@ async function rerankResults(question, retrievedResults) {
 
   try {
     // Prepare sources for re-ranking
-    const sources = retrievedResults.map((result, index) => ({
+    const sources = retrievedResults.map((result) => ({
       type: 'INLINE',
       inlineDocumentSource: {
         type: 'TEXT',
@@ -138,17 +156,18 @@ async function rerankResults(question, retrievedResults) {
         type: 'BEDROCK_RERANKING_MODEL',
         bedrockRerankingConfiguration: {
           modelConfiguration: {
-            modelArn: 'arn:aws:bedrock:us-west-2::foundation-model/amazon.rerank-v1:0',
+            modelArn: `arn:aws:bedrock:${process.env.AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
           },
-          numberOfResults: 10, // Return top 10 after re-ranking
+          numberOfResults: 5, // Return top 5 after re-ranking
         },
       },
     };
 
+    const rerankStart = Date.now();
     const response = await bedrockAgentClient.send(new RerankCommand(rerankParams));
+    const rerankMs = Date.now() - rerankStart;
 
     // Map re-ranked results back to original results with new scores
-  
     const rerankedResults = response.results?.map((result, newIndex) => {
       const originalIndex = result.index;
       const originalResult = retrievedResults[originalIndex];
@@ -156,41 +175,63 @@ async function rerankResults(question, retrievedResults) {
         id: newIndex + 1,
         content: originalResult.content,
         source: originalResult.source,
-        score: originalResult.score, 
-        rerankScore: result.relevanceScore, 
+        originalRank: originalIndex + 1,
+        score: originalResult.score,
+        rerankScore: result.relevanceScore,
       };
     }) || [];
 
-    console.log('Re-ranking complete:', {
+    console.log('[RERANK] Completed:', {
+      durationMs: rerankMs,
       originalCount: retrievedResults.length,
       rerankedCount: rerankedResults.length,
       topVectorScore: rerankedResults[0]?.score,
       topRerankScore: rerankedResults[0]?.rerankScore,
     });
+    // Log all reranked results showing rank movement
+    console.log('[RERANK] All results (rank changes):', JSON.stringify(rerankedResults.map(r => ({
+      newRank: r.id,
+      originalRank: r.originalRank,
+      vectorScore: r.score,
+      rerankScore: r.rerankScore,
+      source: r.source,
+      preview: r.content.substring(0, 150),
+    })), null, 2));
 
     return rerankedResults;
   } catch (error) {
-    console.error('Re-rank error:', {
+    console.error('[RERANK] Error:', {
       errorName: error.name,
       errorMessage: error.message,
       errorCode: error.$metadata?.httpStatusCode,
     });
     // Fall back to original results (top 10) if re-ranking fails
-    console.log('Falling back to original retrieval results');
-    return retrievedResults.slice(0, 10);
+    console.log('[RERANK] Falling back to original retrieval results');
+    return retrievedResults.slice(0, 5).map((r, i) => ({ ...r, originalRank: r.id, rerankScore: null }));
   }
 }
 
 // Step 2: Generate answer using retrieved context
 async function generateAnswer(question, retrievedResults) {
-  // Build context from retrieved results
+  // Build context from retrieved results, including relevance scores
   const context = retrievedResults
-    .map((r, i) => `[Source ${i + 1}]: ${r.content}`)
+    .map((r, i) => `[Source ${i + 1}] (relevance: ${r.rerankScore ? r.rerankScore.toFixed(4) : 'N/A'}): ${r.content}`)
     .join('\n\n');
 
-  const prompt = `You are AskUSDA, a helpful assistant for the United States Department of Agriculture. 
-Answer the user's question based ONLY on the provided context. If the context doesn't contain enough information to answer the question, say so.
-Be concise, accurate, and helpful. Format your response using markdown when appropriate.
+  // Log the context being sent to the model
+  console.log('[GENERATE] Context sources:', JSON.stringify(retrievedResults.map((r, i) => ({
+    sourceNum: i + 1,
+    source: r.source,
+    rerankScore: r.rerankScore,
+    vectorScore: r.score,
+    charLength: r.content.length,
+    preview: r.content.substring(0, 150),
+  })), null, 2));
+  console.log('[GENERATE] Total context length:', context.length, 'chars');
+
+  const prompt = `You are AskUSDA, a helpful assistant for the United States Department of Agriculture.
+Answer the user's question based ONLY on the provided context from USDA sources. If the context doesn't contain enough information to fully answer the question, provide what information you can from the context and note what aspects you couldn't find information about.
+Be concise, accurate, and helpful. Format your response using markdown when appropriate. When citing information, reference the source number.
 
 Context:
 ${context}
@@ -201,7 +242,7 @@ Answer:`;
 
   // Use Amazon Nova Pro via inference profile
   const modelId = `us.amazon.nova-pro-v1:0`;
-  
+
   const requestBody = {
     messages: [
       {
@@ -217,21 +258,31 @@ Answer:`;
   };
 
   try {
+    const generateStart = Date.now();
     const response = await bedrockRuntimeClient.send(new InvokeModelCommand({
       modelId: modelId,
       contentType: 'application/json',
       accept: 'application/json',
       body: JSON.stringify(requestBody),
     }));
+    const generateMs = Date.now() - generateStart;
 
     const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    const answer = responseBody.output?.message?.content?.[0]?.text || 
+    const answer = responseBody.output?.message?.content?.[0]?.text ||
                    responseBody.content?.[0]?.text ||
                    "I couldn't generate a response. Please try again.";
 
-    return answer;
+    console.log('[GENERATE] Completed:', {
+      durationMs: generateMs,
+      modelId,
+      stopReason: responseBody.stopReason,
+      usage: responseBody.usage,
+      answerLength: answer.length,
+    });
+
+    return { answer, usage: responseBody.usage, stopReason: responseBody.stopReason };
   } catch (error) {
-    console.error('Generation error:', {
+    console.error('[GENERATE] Error:', {
       errorName: error.name,
       errorMessage: error.message,
     });
@@ -242,55 +293,59 @@ Answer:`;
 // Combined: Query Knowledge Base with three-step approach (retrieve + rerank + generate)
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
+  console.log('[PIPELINE] Starting RAG pipeline for question:', question);
 
   // Step 1: Retrieve with confidence scores (30 results)
   const retrievedResults = await retrieveFromKnowledgeBase(question);
-  
-  // Calculate max confidence from original vector search (before reranking)
-  // This is used for the confidence threshold check
-  const maxVectorConfidence = retrievedResults.length > 0 
-    ? Math.max(...retrievedResults.map(r => r.score)) 
+  const retrieveMs = Date.now() - startTime;
+
+  // Calculate max confidence from original vector search (for logging)
+  const maxVectorConfidence = retrievedResults.length > 0
+    ? Math.max(...retrievedResults.map(r => r.score))
     : 0;
 
-  // Confidence threshold - responses below this won't be shown
-  // Based on original vector search scores (0-1 scale)
-  const CONFIDENCE_THRESHOLD = 0.5;
-
-  // If confidence is too low, don't generate - return early with NO citations
-  if (maxVectorConfidence < CONFIDENCE_THRESHOLD) {
-    const responseTimeMs = Date.now() - startTime;
-    console.log('Low confidence - skipping generation:', { maxVectorConfidence, threshold: CONFIDENCE_THRESHOLD });
-    return {
-      answer: null,
-      citations: [],
-      maxConfidence: maxVectorConfidence,
-      responseTimeMs,
-      lowConfidence: true,
-    };
-  }
-
-  // Step 1.5: Re-rank results to get top 10 (only if confidence is sufficient)
+  // Step 1.5: Re-rank results to get top 10
+  const rerankStart = Date.now();
   const rerankedResults = await rerankResults(question, retrievedResults);
+  const rerankTotalMs = Date.now() - rerankStart;
 
   // Step 2: Generate answer using re-ranked context
-  const answer = await generateAnswer(question, rerankedResults);
+  const generateStart = Date.now();
+  const generateResult = await generateAnswer(question, rerankedResults);
+  const generateTotalMs = Date.now() - generateStart;
   const responseTimeMs = Date.now() - startTime;
 
-  // Build citations from re-ranked results (use vector score for display)
+  // Build citations from re-ranked results
   const citations = rerankedResults.map(r => ({
     id: r.id,
     text: r.content.substring(0, 200),
     source: r.source,
     score: r.score,
+    rerankScore: r.rerankScore,
   }));
 
+  // Pipeline summary
+  console.log('[PIPELINE] Complete:', {
+    question,
+    totalMs: responseTimeMs,
+    retrieveMs,
+    rerankMs: rerankTotalMs,
+    generateMs: generateTotalMs,
+    retrievedCount: retrievedResults.length,
+    rerankedCount: rerankedResults.length,
+    maxVectorConfidence,
+    topRerankScore: rerankedResults[0]?.rerankScore,
+    stopReason: generateResult.stopReason,
+    tokenUsage: generateResult.usage,
+    answerLength: generateResult.answer.length,
+  });
+
   return {
-    answer,
+    answer: generateResult.answer,
     citations,
     maxConfidence: maxVectorConfidence,
     sessionId: sessionId || uuidv4(),
     responseTimeMs,
-    lowConfidence: false,
   };
 }
 
@@ -355,32 +410,16 @@ async function handleSendMessage(connectionId, body) {
     // Generate conversation ID (but don't save yet - only save when feedback is given)
     const conversationId = uuidv4();
 
-    if (result.lowConfidence) {
-      // Low confidence - suggest user to visit usda.gov or contact support
-      await sendToClient(connectionId, {
-        type: 'message',
-        message: "I'm not very confident about the answer to your question. For accurate information, I'd recommend visiting [usda.gov](https://www.usda.gov) or clicking the **Customer Support** button (headphone icon) in the top right corner to speak with a representative who can better assist you.",
-        citations: [], // Don't show citations for low confidence responses
-        conversationId,
-        sessionId: result.sessionId,
-        responseTimeMs: result.responseTimeMs,
-        question: message,
-        lowConfidence: true,
-        maxConfidence: result.maxConfidence, // Send to frontend for logging
-      });
-    } else {
-      // High confidence - send the actual response
-      await sendToClient(connectionId, {
-        type: 'message',
-        message: result.answer,
-        citations: result.citations,
-        conversationId,
-        sessionId: result.sessionId,
-        responseTimeMs: result.responseTimeMs,
-        question: message,
-        maxConfidence: result.maxConfidence, // Send to frontend for logging
-      });
-    }
+    await sendToClient(connectionId, {
+      type: 'message',
+      message: result.answer,
+      citations: result.citations,
+      conversationId,
+      sessionId: result.sessionId,
+      responseTimeMs: result.responseTimeMs,
+      question: message,
+      maxConfidence: result.maxConfidence,
+    });
 
   } catch (error) {
     console.error('Error processing message:', error);
