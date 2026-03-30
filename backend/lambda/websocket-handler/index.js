@@ -1,7 +1,7 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveCommand, RerankCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
-const { BedrockRuntimeClient, ApplyGuardrailCommand, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { v4: uuidv4 } = require('uuid');
 
@@ -68,285 +68,88 @@ async function applyGuardrails(text) {
   }
 }
 
-// Step 1: Retrieve relevant chunks from Knowledge Base with confidence scores
-async function retrieveFromKnowledgeBase(question) {
-  const params = {
-    knowledgeBaseId: KNOWLEDGE_BASE_ID,
-    retrievalQuery: {
-      text: question,
-    },
-    retrievalConfiguration: {
-      vectorSearchConfiguration: {
-        numberOfResults: 15, // Retrieve 15 results initially for re-ranking
-        overrideSearchType: 'HYBRID', // Use hybrid search (vector + keyword) for better relevance
-      },
-    },
-  };
-
-  try {
-    const retrieveStart = Date.now();
-    const response = await bedrockAgentClient.send(new RetrieveCommand(params));
-
-    // Extract results with confidence scores
-    const results = response.retrievalResults?.map((result, index) => ({
-      id: index + 1,
-      content: result.content?.text || '',
-      source: result.location?.webLocation?.url ||
-              result.location?.s3Location?.uri ||
-              'Unknown source',
-      score: result.score || 0,
-    })) || [];
-
-    const retrieveMs = Date.now() - retrieveStart;
-    console.log('[RETRIEVE] Completed:', {
-      durationMs: retrieveMs,
-      totalResults: results.length,
-      scoreRange: results.length > 0
-        ? { highest: results[0]?.score, lowest: results[results.length - 1]?.score }
-        : null,
-    });
-    // Log all 30 retrieved chunks with source and score
-    console.log('[RETRIEVE] All chunks:', JSON.stringify(results.map(r => ({
-      id: r.id,
-      score: r.score,
-      source: r.source,
-      preview: r.content.substring(0, 150),
-    })), null, 2));
-
-    return results;
-  } catch (error) {
-    console.error('[RETRIEVE] Error:', {
-      errorName: error.name,
-      errorMessage: error.message,
-      errorCode: error.$metadata?.httpStatusCode,
-    });
-    throw error;
-  }
-}
-
-// Step 1.5: Re-rank retrieved results using Amazon Rerank model
-async function rerankResults(question, retrievedResults) {
-  if (retrievedResults.length === 0) {
-    return [];
-  }
-
-  try {
-    // Prepare sources for re-ranking
-    const sources = retrievedResults.map((result) => ({
-      type: 'INLINE',
-      inlineDocumentSource: {
-        type: 'TEXT',
-        textDocument: {
-          text: result.content,
-        },
-      },
-    }));
-
-    const rerankParams = {
-      queries: [
-        {
-          type: 'TEXT',
-          textQuery: {
-            text: question,
-          },
-        },
-      ],
-      sources: sources,
-      rerankingConfiguration: {
-        type: 'BEDROCK_RERANKING_MODEL',
-        bedrockRerankingConfiguration: {
-          modelConfiguration: {
-            modelArn: `arn:aws:bedrock:${process.env.AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
-          },
-          numberOfResults: 5, // Return top 5 after re-ranking
-        },
-      },
-    };
-
-    const rerankStart = Date.now();
-    const response = await bedrockAgentClient.send(new RerankCommand(rerankParams));
-    const rerankMs = Date.now() - rerankStart;
-
-    // Map re-ranked results back to original results with new scores
-    const rerankedResults = response.results?.map((result, newIndex) => {
-      const originalIndex = result.index;
-      const originalResult = retrievedResults[originalIndex];
-      return {
-        id: newIndex + 1,
-        content: originalResult.content,
-        source: originalResult.source,
-        originalRank: originalIndex + 1,
-        score: originalResult.score,
-        rerankScore: result.relevanceScore,
-      };
-    }) || [];
-
-    console.log('[RERANK] Completed:', {
-      durationMs: rerankMs,
-      originalCount: retrievedResults.length,
-      rerankedCount: rerankedResults.length,
-      topVectorScore: rerankedResults[0]?.score,
-      topRerankScore: rerankedResults[0]?.rerankScore,
-    });
-    // Log all reranked results showing rank movement
-    console.log('[RERANK] All results (rank changes):', JSON.stringify(rerankedResults.map(r => ({
-      newRank: r.id,
-      originalRank: r.originalRank,
-      vectorScore: r.score,
-      rerankScore: r.rerankScore,
-      source: r.source,
-      preview: r.content.substring(0, 150),
-    })), null, 2));
-
-    return rerankedResults;
-  } catch (error) {
-    console.error('[RERANK] Error:', {
-      errorName: error.name,
-      errorMessage: error.message,
-      errorCode: error.$metadata?.httpStatusCode,
-    });
-    // Fall back to original results (top 10) if re-ranking fails
-    console.log('[RERANK] Falling back to original retrieval results');
-    return retrievedResults.slice(0, 5).map((r, i) => ({ ...r, originalRank: r.id, rerankScore: null }));
-  }
-}
-
-// Step 2: Generate answer using retrieved context
-async function generateAnswer(question, retrievedResults) {
-  // Build context from retrieved results, including relevance scores
-  const context = retrievedResults
-    .map((r, i) => `[Source ${i + 1}] (relevance: ${r.rerankScore ? r.rerankScore.toFixed(4) : 'N/A'}): ${r.content}`)
-    .join('\n\n');
-
-  // Log the context being sent to the model
-  console.log('[GENERATE] Context sources:', JSON.stringify(retrievedResults.map((r, i) => ({
-    sourceNum: i + 1,
-    source: r.source,
-    rerankScore: r.rerankScore,
-    vectorScore: r.score,
-    charLength: r.content.length,
-    preview: r.content.substring(0, 150),
-  })), null, 2));
-  console.log('[GENERATE] Total context length:', context.length, 'chars');
-
-  const prompt = `You are AskUSDA, a helpful assistant for the United States Department of Agriculture.
-Answer the user's question based ONLY on the provided context from USDA sources. If the context doesn't contain enough information to fully answer the question, provide what information you can from the context and note what aspects you couldn't find information about.
-Be concise, accurate, and helpful. Format your response using markdown when appropriate. When citing information, reference the source number.
-
-Context:
-${context}
-
-User Question: ${question}
-
-Answer:`;
-
-  // Use Amazon Nova Pro via inference profile
-  const modelId = `us.amazon.nova-pro-v1:0`;
-
-  const requestBody = {
-    messages: [
-      {
-        role: 'user',
-        content: [{ text: prompt }],
-      },
-    ],
-    inferenceConfig: {
-      maxTokens: 2048,
-      temperature: 0.4,
-      topP: 0.9,
-    },
-  };
-
-  try {
-    const generateStart = Date.now();
-    const response = await bedrockRuntimeClient.send(new InvokeModelCommand({
-      modelId: modelId,
-      contentType: 'application/json',
-      accept: 'application/json',
-      body: JSON.stringify(requestBody),
-    }));
-    const generateMs = Date.now() - generateStart;
-
-    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    const answer = responseBody.output?.message?.content?.[0]?.text ||
-                   responseBody.content?.[0]?.text ||
-                   "I couldn't generate a response. Please try again.";
-
-    console.log('[GENERATE] Completed:', {
-      durationMs: generateMs,
-      modelId,
-      stopReason: responseBody.stopReason,
-      usage: responseBody.usage,
-      answerLength: answer.length,
-    });
-
-    return { answer, usage: responseBody.usage, stopReason: responseBody.stopReason };
-  } catch (error) {
-    console.error('[GENERATE] Error:', {
-      errorName: error.name,
-      errorMessage: error.message,
-    });
-    throw error;
-  }
-}
-
-// Combined: Query Knowledge Base with three-step approach (retrieve + rerank + generate)
+// Query Knowledge Base using RetrieveAndGenerate API (matches console behavior)
 async function queryKnowledgeBase(question, sessionId) {
   const startTime = Date.now();
-  console.log('[PIPELINE] Starting RAG pipeline for question:', question);
+  console.log('[PIPELINE] Starting RetrieveAndGenerate for question:', question);
 
-  // Step 1: Retrieve with confidence scores (30 results)
-  const retrievedResults = await retrieveFromKnowledgeBase(question);
-  const retrieveMs = Date.now() - startTime;
+  const modelArn = `arn:aws:bedrock:${process.env.AWS_REGION}:${process.env.AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
 
-  // Calculate max confidence from original vector search (for logging)
-  const maxVectorConfidence = retrievedResults.length > 0
-    ? Math.max(...retrievedResults.map(r => r.score))
-    : 0;
-
-  // Step 1.5: Re-rank results to get top 10
-  const rerankStart = Date.now();
-  const rerankedResults = await rerankResults(question, retrievedResults);
-  const rerankTotalMs = Date.now() - rerankStart;
-
-  // Step 2: Generate answer using re-ranked context
-  const generateStart = Date.now();
-  const generateResult = await generateAnswer(question, rerankedResults);
-  const generateTotalMs = Date.now() - generateStart;
-  const responseTimeMs = Date.now() - startTime;
-
-  // Build citations from re-ranked results
-  const citations = rerankedResults.map(r => ({
-    id: r.id,
-    text: r.content.substring(0, 200),
-    source: r.source,
-    score: r.score,
-    rerankScore: r.rerankScore,
-  }));
-
-  // Pipeline summary
-  console.log('[PIPELINE] Complete:', {
-    question,
-    totalMs: responseTimeMs,
-    retrieveMs,
-    rerankMs: rerankTotalMs,
-    generateMs: generateTotalMs,
-    retrievedCount: retrievedResults.length,
-    rerankedCount: rerankedResults.length,
-    maxVectorConfidence,
-    topRerankScore: rerankedResults[0]?.rerankScore,
-    stopReason: generateResult.stopReason,
-    tokenUsage: generateResult.usage,
-    answerLength: generateResult.answer.length,
-  });
-
-  return {
-    answer: generateResult.answer,
-    citations,
-    maxConfidence: maxVectorConfidence,
-    sessionId: sessionId || uuidv4(),
-    responseTimeMs,
+  const params = {
+    input: { text: question },
+    retrieveAndGenerateConfiguration: {
+      type: 'KNOWLEDGE_BASE',
+      knowledgeBaseConfiguration: {
+        knowledgeBaseId: KNOWLEDGE_BASE_ID,
+        modelArn: modelArn,
+        retrievalConfiguration: {
+          vectorSearchConfiguration: {
+            numberOfResults: 100,
+            overrideSearchType: 'HYBRID',
+            rerankingConfiguration: {
+              type: 'BEDROCK_RERANKING_MODEL',
+              bedrockRerankingConfiguration: {
+                modelConfiguration: {
+                  modelArn: `arn:aws:bedrock:${process.env.AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
   };
+
+  try {
+    const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
+    const responseTimeMs = Date.now() - startTime;
+
+    const answer = response.output?.text || "I couldn't generate a response. Please try again.";
+
+    // Extract citations from the response
+    const citations = [];
+    if (response.citations) {
+      for (const citation of response.citations) {
+        for (const ref of (citation.retrievedReferences || [])) {
+          const source = ref.location?.webLocation?.url ||
+                         ref.location?.s3Location?.uri ||
+                         'Unknown source';
+          // Avoid duplicate sources
+          if (!citations.find(c => c.source === source)) {
+            citations.push({
+              id: citations.length + 1,
+              text: (ref.content?.text || '').substring(0, 200),
+              source: source,
+              score: 0,
+            });
+          }
+        }
+      }
+    }
+
+    console.log('[PIPELINE] Complete:', {
+      question,
+      totalMs: responseTimeMs,
+      answerLength: answer.length,
+      citationCount: citations.length,
+      sessionId: response.sessionId,
+    });
+
+    return {
+      answer,
+      citations,
+      maxConfidence: 0,
+      sessionId: sessionId || uuidv4(),
+      responseTimeMs,
+    };
+  } catch (error) {
+    console.error('[PIPELINE] Error:', {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: error.$metadata?.httpStatusCode,
+    });
+    throw error;
+  }
 }
 
 // Save escalation request

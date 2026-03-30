@@ -149,6 +149,21 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [vectorCollection.collectionArn],
     }));
 
+    // Rerank permissions for Knowledge Base (required when reranking is enabled in Retrieve API)
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:Rerank'],
+      resources: ['*'],
+    }));
+
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`,
+      ],
+    }));
+
     // ==================== Bedrock Knowledge Base ====================
     const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'USDAKnowledgeBase', {
       name: 'AskUSDA-KnowledgeBase',
