@@ -224,6 +224,16 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
+    // S3 permissions to read/write crawler bucket (metadata preparation)
+    kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
+      resources: [
+        crawlerBucket.bucketArn,
+        `${crawlerBucket.bucketArn}/*`,
+      ],
+    }));
+
     // ECS permissions to trigger crawl tasks
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -247,9 +257,124 @@ export class USDAChatbotStack extends cdk.Stack {
       code: lambda.Code.fromInline(`
 const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/client-bedrock-agent');
 const { ECSClient, RunTaskCommand } = require('@aws-sdk/client-ecs');
+const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 const bedrockClient = new BedrockAgentClient({});
 const ecsClient = new ECSClient({ region: process.env.CRAWLER_REGION || 'us-west-2' });
+const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
+
+const BUCKET = process.env.CRAWLER_BUCKET;
+
+async function streamToString(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+// Prepare metadata: copy crawler metadata files alongside markdown files in Bedrock format.
+// Crawler stores:  jobs/{id}/all/metadata/{hash}.md.metadata.json  (custom format)
+// Bedrock expects: jobs/{id}/all/markdown/{hash}.md.metadata.json  (metadataAttributes format)
+async function prepareMetadata() {
+  console.log('[PREPARE] Starting metadata preparation for bucket:', BUCKET);
+  let totalPrepared = 0;
+  let totalSkipped = 0;
+
+  // List all top-level job prefixes
+  const jobsResp = await s3Client.send(new ListObjectsV2Command({
+    Bucket: BUCKET, Prefix: 'jobs/', Delimiter: '/',
+  }));
+  const jobPrefixes = (jobsResp.CommonPrefixes || []).map(p => p.Prefix);
+  console.log('[PREPARE] Found', jobPrefixes.length, 'job directories');
+
+  for (const jobPrefix of jobPrefixes) {
+    const metadataPrefix = jobPrefix + 'all/metadata/';
+    const markdownPrefix = jobPrefix + 'all/markdown/';
+
+    let continuationToken;
+    do {
+      const listResp = await s3Client.send(new ListObjectsV2Command({
+        Bucket: BUCKET, Prefix: metadataPrefix,
+        ContinuationToken: continuationToken, MaxKeys: 500,
+      }));
+      continuationToken = listResp.NextContinuationToken;
+      const metaFiles = (listResp.Contents || []).filter(o => o.Key.endsWith('.metadata.json'));
+
+      // Process in batches of 25 for parallelism
+      for (let i = 0; i < metaFiles.length; i += 25) {
+        const batch = metaFiles.slice(i, i + 25);
+        await Promise.all(batch.map(async (obj) => {
+          const filename = obj.Key.split('/').pop(); // e.g. abc123.md.metadata.json
+          const destKey = markdownPrefix + filename;
+
+          try {
+            const getResp = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
+            const raw = JSON.parse(await streamToString(getResp.Body));
+
+            // Transform to Bedrock metadata format
+            const bedrockMeta = { metadataAttributes: {} };
+            if (raw.source_url) bedrockMeta.metadataAttributes.source_url = raw.source_url;
+            if (raw.title)      bedrockMeta.metadataAttributes.title = raw.title;
+            if (raw.domain)     bedrockMeta.metadataAttributes.domain = raw.domain;
+            if (raw.path)       bedrockMeta.metadataAttributes.path = raw.path;
+
+            await s3Client.send(new PutObjectCommand({
+              Bucket: BUCKET, Key: destKey,
+              Body: JSON.stringify(bedrockMeta),
+              ContentType: 'application/json',
+            }));
+            totalPrepared++;
+          } catch (err) {
+            console.warn('[PREPARE] Failed to process', obj.Key, err.message);
+            totalSkipped++;
+          }
+        }));
+      }
+    } while (continuationToken);
+
+    // Also handle PDFs metadata if it exists
+    const pdfMetaPrefix = jobPrefix + 'pdfs/metadata/';
+    const pdfContentPrefix = jobPrefix + 'pdfs/';
+    let pdfToken;
+    do {
+      const listResp = await s3Client.send(new ListObjectsV2Command({
+        Bucket: BUCKET, Prefix: pdfMetaPrefix,
+        ContinuationToken: pdfToken, MaxKeys: 500,
+      }));
+      pdfToken = listResp.NextContinuationToken;
+      const metaFiles = (listResp.Contents || []).filter(o => o.Key.endsWith('.metadata.json'));
+
+      for (let i = 0; i < metaFiles.length; i += 25) {
+        const batch = metaFiles.slice(i, i + 25);
+        await Promise.all(batch.map(async (obj) => {
+          const filename = obj.Key.split('/').pop();
+          const pdfName = filename.replace('.metadata.json', '');
+          const destKey = pdfContentPrefix + pdfName + '.metadata.json';
+
+          try {
+            const getResp = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: obj.Key }));
+            const raw = JSON.parse(await streamToString(getResp.Body));
+            const bedrockMeta = { metadataAttributes: {} };
+            if (raw.source_url) bedrockMeta.metadataAttributes.source_url = raw.source_url;
+            if (raw.title)      bedrockMeta.metadataAttributes.title = raw.title;
+            if (raw.domain)     bedrockMeta.metadataAttributes.domain = raw.domain;
+
+            await s3Client.send(new PutObjectCommand({
+              Bucket: BUCKET, Key: destKey,
+              Body: JSON.stringify(bedrockMeta),
+              ContentType: 'application/json',
+            }));
+            totalPrepared++;
+          } catch (err) {
+            totalSkipped++;
+          }
+        }));
+      }
+    } while (pdfToken);
+  }
+
+  console.log('[PREPARE] Done. Prepared:', totalPrepared, 'Skipped:', totalSkipped);
+  return { prepared: totalPrepared, skipped: totalSkipped };
+}
 
 exports.handler = async (event) => {
   console.log('Event:', JSON.stringify(event, null, 2));
@@ -298,7 +423,16 @@ exports.handler = async (event) => {
     return { status: 'crawl_started', taskArn, url };
   }
 
-  // Action: ingest — start KB ingestion from S3
+  // Action: prepare — transform metadata files for Bedrock (can be called standalone)
+  if (action === 'prepare') {
+    const result = await prepareMetadata();
+    return { status: 'prepare_complete', ...result };
+  }
+
+  // Action: ingest (default) — prepare metadata then start KB ingestion
+  const prepResult = await prepareMetadata();
+  console.log('[INGEST] Metadata preparation result:', prepResult);
+
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
   const dataSourceId = process.env.DATA_SOURCE_ID;
 
@@ -310,15 +444,16 @@ exports.handler = async (event) => {
 
   const ingestionJobId = response.ingestionJob?.ingestionJobId;
   console.log('Ingestion started, job ID:', ingestionJobId);
-  return { status: 'ingestion_started', ingestionJobId };
+  return { status: 'ingestion_started', ingestionJobId, metadata: prepResult };
 };
       `),
       role: kbSyncLambdaRole,
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 128,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         DATA_SOURCE_ID: s3DataSource.attrDataSourceId,
+        CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_CLUSTER_ARN: crawlerClusterArn,
         CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
         CRAWLER_CONTAINER_NAME: crawlerContainerName,
@@ -352,6 +487,16 @@ exports.handler = async (event) => {
 
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
+
+    // S3 read access for citation URL fallback (reads crawler metadata files)
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:ListBucket'],
+      resources: [
+        crawlerBucket.bucketArn,
+        `${crawlerBucket.bucketArn}/*`,
+      ],
+    }));
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -404,12 +549,7 @@ exports.handler = async (event) => {
       functionName: 'AskUSDA-WebSocketHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/websocket-handler', {
-        bundling: {
-          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
-          command: ['bash', '-c', 'npm install && cp -au . /asset-output'],
-        },
-      }),
+      code: lambda.Code.fromAsset('lambda/websocket-handler'),
       role: lambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
@@ -421,6 +561,8 @@ exports.handler = async (event) => {
         EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
+        CRAWLER_BUCKET: crawlerBucketName,
+        CRAWLER_REGION: 'us-west-2',
       },
     });
 
@@ -521,12 +663,7 @@ exports.handler = async (event) => {
       functionName: 'AskUSDA-AdminHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset('lambda/admin-api', {
-        bundling: {
-          image: lambda.Runtime.NODEJS_20_X.bundlingImage,
-          command: ['bash', '-c', 'npm install && cp -au . /asset-output'],
-        },
-      }),
+      code: lambda.Code.fromAsset('lambda/admin-api'),
       role: adminLambdaRole,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,

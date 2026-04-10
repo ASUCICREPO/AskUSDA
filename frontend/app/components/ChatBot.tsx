@@ -43,6 +43,7 @@ interface Citation {
   text: string;
   source: string;
   score: number;
+  title?: string;
 }
 
 interface Message {
@@ -893,7 +894,7 @@ export default function ChatBot() {
                               title={citation.source}
                             >
                               <span className="inline-block mr-1.5">↗</span>
-                              <span className="text-sm font-medium">{generateSourceTitle(citation.source)}</span>
+                              <span className="text-sm font-medium">{citation.title || generateSourceTitle(citation.source)}</span>
                             </a>
                           ))}
                         </div>

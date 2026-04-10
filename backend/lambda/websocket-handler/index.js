@@ -3,6 +3,7 @@ const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { v4: uuidv4 } = require('uuid');
 
 // Initialize clients
@@ -10,6 +11,7 @@ const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const bedrockAgentClient = new BedrockAgentRuntimeClient({});
 const bedrockRuntimeClient = new BedrockRuntimeClient({});
+const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
 // Environment variables
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
@@ -18,6 +20,25 @@ const ESCALATION_TABLE = process.env.ESCALATION_TABLE;
 const GUARDRAIL_ID = process.env.GUARDRAIL_ID;
 const GUARDRAIL_VERSION = process.env.GUARDRAIL_VERSION || 'DRAFT';
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
+const CRAWLER_BUCKET = process.env.CRAWLER_BUCKET;
+
+// Resolve a real website URL from an S3 URI by reading the crawler metadata file.
+// S3 markdown path: s3://bucket/jobs/{id}/all/markdown/{hash}.md
+// Metadata path:    jobs/{id}/all/metadata/{hash}.md.metadata.json
+async function resolveSourceUrl(s3Uri) {
+  if (!CRAWLER_BUCKET || !s3Uri.includes(CRAWLER_BUCKET)) return s3Uri;
+  try {
+    const key = s3Uri.replace(`s3://${CRAWLER_BUCKET}/`, '');
+    const metadataKey = key.replace('/all/markdown/', '/all/metadata/') + '.metadata.json';
+    const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: metadataKey }));
+    const chunks = [];
+    for await (const chunk of resp.Body) chunks.push(chunk);
+    const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+    return meta.source_url || s3Uri;
+  } catch {
+    return s3Uri;
+  }
+}
 
 // Helper to send message to WebSocket client
 async function sendToClient(connectionId, data) {
@@ -111,7 +132,9 @@ async function queryKnowledgeBase(question, sessionId) {
     // if (response.citations) {
     //   for (const citation of response.citations) {
     //     for (const ref of (citation.retrievedReferences || [])) {
-    //       const source = ref.location?.webLocation?.url ||
+    //       const metadata = ref.metadata || {};
+    //       const source = metadata.source_url || metadata['source_url'] ||
+    //                      ref.location?.webLocation?.url ||
     //                      ref.location?.s3Location?.uri ||
     //                      'Unknown source';
     //       if (!citations.find(c => c.source === source)) {
@@ -119,6 +142,7 @@ async function queryKnowledgeBase(question, sessionId) {
     //           id: citations.length + 1,
     //           text: (ref.content?.text || '').substring(0, 200),
     //           source: source,
+    //           title: metadata.title || '',
     //           score: 0,
     //         });
     //       }
@@ -128,7 +152,8 @@ async function queryKnowledgeBase(question, sessionId) {
     // const maxConfidence = 0;
     // ===== END ORIGINAL =====
 
-    // ===== NEW: Use Retrieve API directly for top 20 citations with scores =====
+    // ===== Use Retrieve API for top 20 citations with scores =====
+    // Priority: metadata.source_url > webLocation > s3Location (with S3 fallback lookup)
     const citations = [];
     try {
       const retrieveResponse = await bedrockAgentClient.send(new RetrieveCommand({
@@ -142,16 +167,48 @@ async function queryKnowledgeBase(question, sessionId) {
         },
       }));
       const seen = new Set();
+      const rawResults = [];
       for (const result of (retrieveResponse.retrievalResults || [])) {
-        const source = result.location?.webLocation?.url ||
-                       result.location?.s3Location?.uri || '';
+        const metadata = result.metadata || {};
+        const sourceUrl = metadata.source_url || metadata['source_url'] || '';
+        const webUrl = result.location?.webLocation?.url || '';
+        const s3Uri = result.location?.s3Location?.uri || '';
+        const source = sourceUrl || webUrl || s3Uri || '';
+        const title = metadata.title || '';
+
         if (source && !seen.has(source)) {
           seen.add(source);
-          citations.push({
-            id: citations.length + 1,
+          rawResults.push({
             text: (result.content?.text || '').substring(0, 200),
             source,
+            title,
             score: result.score || 0,
+            needsResolve: !sourceUrl && !webUrl && !!s3Uri,
+          });
+        }
+      }
+
+      // Fallback: resolve S3 URIs to real URLs by reading crawler metadata from S3
+      const resolved = await Promise.all(rawResults.map(async (r) => {
+        if (r.needsResolve) {
+          const realUrl = await resolveSourceUrl(r.source);
+          const resolvedTitle = r.title || '';
+          return { ...r, source: realUrl, title: resolvedTitle };
+        }
+        return r;
+      }));
+
+      // Deduplicate again after resolution (two S3 URIs might resolve to the same URL)
+      const finalSeen = new Set();
+      for (const r of resolved) {
+        if (!finalSeen.has(r.source)) {
+          finalSeen.add(r.source);
+          citations.push({
+            id: citations.length + 1,
+            text: r.text,
+            source: r.source,
+            title: r.title,
+            score: r.score,
           });
         }
       }
@@ -162,7 +219,7 @@ async function queryKnowledgeBase(question, sessionId) {
     const maxConfidence = citations.length > 0
       ? Math.max(...citations.map(c => c.score))
       : 0;
-    // ===== END NEW =====
+    // ===== END citations =====
 
     console.log('[PIPELINE] Complete:', {
       question,
