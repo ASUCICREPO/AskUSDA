@@ -1,0 +1,11 @@
+{
+  "name": "kb-sync-handler",
+  "version": "1.0.0",
+  "description": "Lambda handler for KB sync: crawl trigger, metadata preparation, and ingestion",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agent": "^3.0.0",
+    "@aws-sdk/client-ecs": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.0.0"
+  }
+}

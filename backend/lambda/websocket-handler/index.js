@@ -1,6 +1,6 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
@@ -23,18 +23,54 @@ const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
 const CRAWLER_BUCKET = process.env.CRAWLER_BUCKET;
 
 // Resolve a real website URL from an S3 URI by reading the crawler metadata file.
-// S3 markdown path: s3://bucket/jobs/{id}/all/markdown/{hash}.md
-// Metadata path:    jobs/{id}/all/metadata/{hash}.md.metadata.json
+// Works for all content types: markdown, pdfs, and docs.
+// Ingestion path: s3://bucket/ingestion/{type}/{filename}
+// Crawler metadata paths:
+//   jobs/{id}/all/metadata/{hash}.md.metadata.json  (for markdown)
+//   jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json (for pdfs)
+//   jobs/{id}/docs/metadata/{name}.xlsx.metadata.json (for docs)
 async function resolveSourceUrl(s3Uri) {
   if (!CRAWLER_BUCKET || !s3Uri.includes(CRAWLER_BUCKET)) return s3Uri;
   try {
     const key = s3Uri.replace(`s3://${CRAWLER_BUCKET}/`, '');
-    const metadataKey = key.replace('/all/markdown/', '/all/metadata/') + '.metadata.json';
-    const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: metadataKey }));
-    const chunks = [];
-    for await (const chunk of resp.Body) chunks.push(chunk);
-    const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
-    return meta.source_url || s3Uri;
+
+    // If the file is in ingestion/, try to read the co-located Bedrock metadata
+    if (key.startsWith('ingestion/')) {
+      const bedrockMetaKey = key + '.metadata.json';
+      try {
+        const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: bedrockMetaKey }));
+        const chunks = [];
+        for await (const chunk of resp.Body) chunks.push(chunk);
+        const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        const url = meta.metadataAttributes?.source_url;
+        if (url) return url;
+      } catch {}
+    }
+
+    // Fallback: try the original crawler metadata paths under jobs/
+    // For markdown: jobs/{id}/all/markdown/{hash}.md → jobs/{id}/all/metadata/{hash}.md.metadata.json
+    // For pdfs:     jobs/{id}/pdfs/{name}.pdf → jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json
+    // For docs:     jobs/{id}/docs/{name}.xlsx → jobs/{id}/docs/metadata/{name}.xlsx.metadata.json
+    let metadataKey;
+    if (key.includes('/all/markdown/')) {
+      metadataKey = key.replace('/all/markdown/', '/all/metadata/') + '.metadata.json';
+    } else if (key.includes('/pdfs/') && !key.includes('/metadata/')) {
+      const parts = key.split('/pdfs/');
+      metadataKey = parts[0] + '/pdfs/metadata/' + parts[1] + '.metadata.json';
+    } else if (key.includes('/docs/') && !key.includes('/metadata/')) {
+      const parts = key.split('/docs/');
+      metadataKey = parts[0] + '/docs/metadata/' + parts[1] + '.metadata.json';
+    }
+
+    if (metadataKey) {
+      const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: metadataKey }));
+      const chunks = [];
+      for await (const chunk of resp.Body) chunks.push(chunk);
+      const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+      return meta.source_url || s3Uri;
+    }
+
+    return s3Uri;
   } catch {
     return s3Uri;
   }
@@ -127,99 +163,60 @@ async function queryKnowledgeBase(question, sessionId) {
 
     const answer = response.output?.text || "I couldn't generate a response. Please try again.";
 
-    // ===== ORIGINAL (no scores) — uncomment to revert =====
-    // const citations = [];
-    // if (response.citations) {
-    //   for (const citation of response.citations) {
-    //     for (const ref of (citation.retrievedReferences || [])) {
-    //       const metadata = ref.metadata || {};
-    //       const source = metadata.source_url || metadata['source_url'] ||
-    //                      ref.location?.webLocation?.url ||
-    //                      ref.location?.s3Location?.uri ||
-    //                      'Unknown source';
-    //       if (!citations.find(c => c.source === source)) {
-    //         citations.push({
-    //           id: citations.length + 1,
-    //           text: (ref.content?.text || '').substring(0, 200),
-    //           source: source,
-    //           title: metadata.title || '',
-    //           score: 0,
-    //         });
-    //       }
-    //     }
-    //   }
-    // }
-    // const maxConfidence = 0;
-    // ===== END ORIGINAL =====
+    // Extract citations from the RetrieveAndGenerate response — these are the
+    // exact sources the model used to generate the answer.
+    // Priority: metadata.source_url > webLocation > s3Location (with S3 fallback)
+    const rawCitations = [];
+    const seen = new Set();
+    if (response.citations) {
+      for (const citation of response.citations) {
+        for (const ref of (citation.retrievedReferences || [])) {
+          const metadata = ref.metadata || {};
+          const sourceUrl = metadata.source_url || metadata['source_url'] || '';
+          const webUrl = ref.location?.webLocation?.url || '';
+          const s3Uri = ref.location?.s3Location?.uri || '';
+          const source = sourceUrl || webUrl || s3Uri || '';
+          const title = metadata.title || '';
 
-    // ===== Use Retrieve API for top 20 citations with scores =====
-    // Priority: metadata.source_url > webLocation > s3Location (with S3 fallback lookup)
-    const citations = [];
-    try {
-      const retrieveResponse = await bedrockAgentClient.send(new RetrieveCommand({
-        knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        retrievalQuery: { text: question },
-        retrievalConfiguration: {
-          vectorSearchConfiguration: {
-            numberOfResults: 20,
-            overrideSearchType: 'HYBRID',
-          },
-        },
-      }));
-      const seen = new Set();
-      const rawResults = [];
-      for (const result of (retrieveResponse.retrievalResults || [])) {
-        const metadata = result.metadata || {};
-        const sourceUrl = metadata.source_url || metadata['source_url'] || '';
-        const webUrl = result.location?.webLocation?.url || '';
-        const s3Uri = result.location?.s3Location?.uri || '';
-        const source = sourceUrl || webUrl || s3Uri || '';
-        const title = metadata.title || '';
-
-        if (source && !seen.has(source)) {
-          seen.add(source);
-          rawResults.push({
-            text: (result.content?.text || '').substring(0, 200),
-            source,
-            title,
-            score: result.score || 0,
-            needsResolve: !sourceUrl && !webUrl && !!s3Uri,
-          });
+          if (source && !seen.has(source)) {
+            seen.add(source);
+            rawCitations.push({
+              text: (ref.content?.text || '').substring(0, 200),
+              source,
+              title,
+              needsResolve: !sourceUrl && !webUrl && !!s3Uri,
+            });
+          }
         }
       }
-
-      // Fallback: resolve S3 URIs to real URLs by reading crawler metadata from S3
-      const resolved = await Promise.all(rawResults.map(async (r) => {
-        if (r.needsResolve) {
-          const realUrl = await resolveSourceUrl(r.source);
-          const resolvedTitle = r.title || '';
-          return { ...r, source: realUrl, title: resolvedTitle };
-        }
-        return r;
-      }));
-
-      // Deduplicate again after resolution (two S3 URIs might resolve to the same URL)
-      const finalSeen = new Set();
-      for (const r of resolved) {
-        if (!finalSeen.has(r.source)) {
-          finalSeen.add(r.source);
-          citations.push({
-            id: citations.length + 1,
-            text: r.text,
-            source: r.source,
-            title: r.title,
-            score: r.score,
-          });
-        }
-      }
-    } catch (retrieveErr) {
-      console.warn('[PIPELINE] Retrieve for citations failed (non-fatal):', retrieveErr.message);
     }
 
-    const maxConfidence = citations.length > 0
-      ? Math.max(...citations.map(c => c.score))
-      : 0;
-    // ===== END citations =====
+    // Fallback: resolve S3 URIs to real URLs by reading crawler metadata from S3
+    const resolved = await Promise.all(rawCitations.map(async (r) => {
+      if (r.needsResolve) {
+        const realUrl = await resolveSourceUrl(r.source);
+        return { ...r, source: realUrl };
+      }
+      return r;
+    }));
+
+    // Deduplicate after resolution (two S3 URIs might map to the same URL)
+    const citations = [];
+    const finalSeen = new Set();
+    for (const r of resolved) {
+      if (!finalSeen.has(r.source)) {
+        finalSeen.add(r.source);
+        citations.push({
+          id: citations.length + 1,
+          text: r.text,
+          source: r.source,
+          title: r.title,
+          score: 0,
+        });
+      }
+    }
+
+    const maxConfidence = 0;
 
     console.log('[PIPELINE] Complete:', {
       question,
