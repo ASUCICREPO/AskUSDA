@@ -1,6 +1,6 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
+const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand, RetrieveCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { v4: uuidv4 } = require('uuid');
@@ -106,26 +106,63 @@ async function queryKnowledgeBase(question, sessionId) {
 
     const answer = response.output?.text || "I couldn't generate a response. Please try again.";
 
-    // Extract citations from the response
+    // ===== ORIGINAL (no scores) — uncomment to revert =====
+    // const citations = [];
+    // if (response.citations) {
+    //   for (const citation of response.citations) {
+    //     for (const ref of (citation.retrievedReferences || [])) {
+    //       const source = ref.location?.webLocation?.url ||
+    //                      ref.location?.s3Location?.uri ||
+    //                      'Unknown source';
+    //       if (!citations.find(c => c.source === source)) {
+    //         citations.push({
+    //           id: citations.length + 1,
+    //           text: (ref.content?.text || '').substring(0, 200),
+    //           source: source,
+    //           score: 0,
+    //         });
+    //       }
+    //     }
+    //   }
+    // }
+    // const maxConfidence = 0;
+    // ===== END ORIGINAL =====
+
+    // ===== NEW: Use Retrieve API directly for top 20 citations with scores =====
     const citations = [];
-    if (response.citations) {
-      for (const citation of response.citations) {
-        for (const ref of (citation.retrievedReferences || [])) {
-          const source = ref.location?.webLocation?.url ||
-                         ref.location?.s3Location?.uri ||
-                         'Unknown source';
-          // Avoid duplicate sources
-          if (!citations.find(c => c.source === source)) {
-            citations.push({
-              id: citations.length + 1,
-              text: (ref.content?.text || '').substring(0, 200),
-              source: source,
-              score: 0,
-            });
-          }
+    try {
+      const retrieveResponse = await bedrockAgentClient.send(new RetrieveCommand({
+        knowledgeBaseId: KNOWLEDGE_BASE_ID,
+        retrievalQuery: { text: question },
+        retrievalConfiguration: {
+          vectorSearchConfiguration: {
+            numberOfResults: 20,
+            overrideSearchType: 'HYBRID',
+          },
+        },
+      }));
+      const seen = new Set();
+      for (const result of (retrieveResponse.retrievalResults || [])) {
+        const source = result.location?.webLocation?.url ||
+                       result.location?.s3Location?.uri || '';
+        if (source && !seen.has(source)) {
+          seen.add(source);
+          citations.push({
+            id: citations.length + 1,
+            text: (result.content?.text || '').substring(0, 200),
+            source,
+            score: result.score || 0,
+          });
         }
       }
+    } catch (retrieveErr) {
+      console.warn('[PIPELINE] Retrieve for citations failed (non-fatal):', retrieveErr.message);
     }
+
+    const maxConfidence = citations.length > 0
+      ? Math.max(...citations.map(c => c.score))
+      : 0;
+    // ===== END NEW =====
 
     console.log('[PIPELINE] Complete:', {
       question,
@@ -138,7 +175,7 @@ async function queryKnowledgeBase(question, sessionId) {
     return {
       answer,
       citations,
-      maxConfidence: 0,
+      maxConfidence,
       sessionId: sessionId || uuidv4(),
       responseTimeMs,
     };

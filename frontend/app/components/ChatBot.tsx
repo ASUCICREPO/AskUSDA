@@ -351,6 +351,20 @@ export default function ChatBot() {
     ws.onmessage = (event) => {
       try {
         const data: WebSocketMessage = JSON.parse(event.data);
+        // Log full response data including citations for debugging
+        if (data.citations && data.citations.length > 0) {
+          console.group('🔍 AskUSDA Sources/Citations');
+          console.log('Total citations:', data.citations.length);
+          data.citations.forEach((c, i) => {
+            console.log(`\n[${i + 1}] Source: ${c.source}`);
+            console.log(`    Score: ${c.score}`);
+            console.log(`    Text: ${c.text?.substring(0, 200)}...`);
+          });
+          console.groupEnd();
+        }
+        if (data.type === 'message') {
+          console.log('📋 Full response payload:', JSON.stringify(data, null, 2));
+        }
         handleWebSocketMessage(data);
       } catch (error) {
         console.error("Failed to parse WebSocket message:", error);

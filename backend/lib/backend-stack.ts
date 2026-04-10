@@ -10,21 +10,28 @@ import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // ==================== Web Crawler Config (from CDK context) ====================
+    const crawlerBucketName = this.node.tryGetContext('crawlerBucketName') || 'webcrawlerstack-crawlerdatabucketea3cc496-zrasanqbdtrx';
+    const crawlerClusterArn = this.node.tryGetContext('crawlerClusterArn') || 'arn:aws:ecs:us-west-2:904233123149:cluster/web-crawler-cluster';
+    const crawlerTaskDefArn = this.node.tryGetContext('crawlerTaskDefArn') || 'arn:aws:ecs:us-west-2:904233123149:task-definition/WebCrawlerStackCrawlerTaskDef07955191:1';
+    const crawlerContainerName = this.node.tryGetContext('crawlerContainerName') || 'CrawlerContainer';
+    const crawlerSubnetIds = this.node.tryGetContext('crawlerSubnetIds') || 'subnet-0371351a29fb1aaae,subnet-071a87c9587b5c6fa';
+    const crawlerSecurityGroupId = this.node.tryGetContext('crawlerSecurityGroupId') || 'sg-02e3bb3712f4abfdb';
+
     // ==================== Amplify App ID (from CDK context) ====================
-    // Used to construct the frontend origin URL for CORS
     const amplifyAppId = this.node.tryGetContext('amplifyAppId') || '';
     const frontendOrigin = amplifyAppId
       ? `https://master.${amplifyAppId}.amplifyapp.com`
-      : '*'; // Fallback to wildcard only if no Amplify app ID provided
+      : '*';
 
     // ==================== DynamoDB - Conversation History ====================
-    // Table to store conversation history for analytics and admin dashboard
     const conversationHistoryTable = new dynamodb.Table(this, 'ConversationHistory', {
       tableName: 'AskUSDA-ConversationHistory',
       partitionKey: { name: 'conversationId', type: dynamodb.AttributeType.STRING },
@@ -34,21 +41,18 @@ export class USDAChatbotStack extends cdk.Stack {
       timeToLiveAttribute: 'ttl',
     });
 
-    // GSI for querying by sessionId
     conversationHistoryTable.addGlobalSecondaryIndex({
       indexName: 'sessionId-timestamp-index',
       partitionKey: { name: 'sessionId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // GSI for querying by date (for admin dashboard analytics)
     conversationHistoryTable.addGlobalSecondaryIndex({
       indexName: 'date-timestamp-index',
       partitionKey: { name: 'date', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // GSI for querying by feedback status
     conversationHistoryTable.addGlobalSecondaryIndex({
       indexName: 'feedback-timestamp-index',
       partitionKey: { name: 'feedback', type: dynamodb.AttributeType.STRING },
@@ -71,47 +75,25 @@ export class USDAChatbotStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // ==================== OpenSearch Serverless Vector Collection (L2 Construct) ====================
-    // Using @cdklabs/generative-ai-cdk-constructs which automatically handles:
-    // - Encryption policy
-    // - Network policy  
-    // - Data access policy
+    // ==================== OpenSearch Serverless Vector Collection ====================
     const vectorCollection = new opensearchserverless.VectorCollection(this, 'VectorCollection', {
       collectionName: 'askusda-vectors',
       description: 'Vector store for AskUSDA Knowledge Base',
-      standbyReplicas: opensearchserverless.VectorCollectionStandbyReplicas.DISABLED, // Cost optimization
+      standbyReplicas: opensearchserverless.VectorCollectionStandbyReplicas.DISABLED,
     });
 
-    // ==================== OpenSearch Vector Index (L2 Construct) ====================
-    // This automatically creates the index with proper mappings for Bedrock Knowledge Base
     const vectorIndex = new opensearch_vectorindex.VectorIndex(this, 'VectorIndex', {
       collection: vectorCollection,
       indexName: 'askusda-index',
-      vectorDimensions: 1024, // Amazon Titan Embed Text v2 dimension
+      vectorDimensions: 1024,
       vectorField: 'vector',
       precision: 'float',
       distanceType: 'l2',
       mappings: [
-        {
-          mappingField: 'text',
-          dataType: 'text',
-          filterable: true,
-        },
-        {
-          mappingField: 'metadata',
-          dataType: 'text',
-          filterable: false,
-        },
-        {
-          mappingField: 'AMAZON_BEDROCK_TEXT_CHUNK',
-          dataType: 'text',
-          filterable: true,
-        },
-        {
-          mappingField: 'AMAZON_BEDROCK_METADATA',
-          dataType: 'text',
-          filterable: false,
-        },
+        { mappingField: 'text', dataType: 'text', filterable: true },
+        { mappingField: 'metadata', dataType: 'text', filterable: false },
+        { mappingField: 'AMAZON_BEDROCK_TEXT_CHUNK', dataType: 'text', filterable: true },
+        { mappingField: 'AMAZON_BEDROCK_METADATA', dataType: 'text', filterable: false },
       ],
     });
 
@@ -121,8 +103,6 @@ export class USDAChatbotStack extends cdk.Stack {
       description: 'IAM role for AskUSDA Knowledge Base',
     });
 
-    // Bedrock KB needs to invoke the embedding model (Titan) for vectorization
-    // and the parsing model (Claude Haiku) for document parsing during ingestion
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
@@ -132,24 +112,20 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     }));
 
-    // KB needs to list and describe foundation models during setup
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:ListFoundationModels', 'bedrock:GetFoundationModel'],
       resources: ['*'],
     }));
 
-    // Grant data access to the OpenSearch Serverless collection
     vectorCollection.grantDataAccess(knowledgeBaseRole);
 
-    // Add OpenSearch Serverless API permissions for Knowledge Base
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['aoss:APIAccessAll'],
       resources: [vectorCollection.collectionArn],
     }));
 
-    // Rerank permissions for Knowledge Base (required when reranking is enabled in Retrieve API)
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:Rerank'],
@@ -159,15 +135,26 @@ export class USDAChatbotStack extends cdk.Stack {
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
+    }));
+
+    // ==================== S3 Bucket Reference (Web Crawler Output) ====================
+    const crawlerBucket = s3.Bucket.fromBucketName(this, 'CrawlerDataBucket', crawlerBucketName);
+
+    // Grant KB role read access to the crawler bucket
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject', 's3:ListBucket'],
       resources: [
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`,
+        crawlerBucket.bucketArn,
+        `${crawlerBucket.bucketArn}/*`,
       ],
     }));
 
     // ==================== Bedrock Knowledge Base ====================
     const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'USDAKnowledgeBase', {
       name: 'AskUSDA-KnowledgeBase',
-      description: 'Knowledge base for USDA information using web crawler',
+      description: 'Knowledge base for USDA information using web crawler S3 data',
       roleArn: knowledgeBaseRole.roleArn,
       knowledgeBaseConfiguration: {
         type: 'VECTOR',
@@ -189,10 +176,8 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
 
-    // Ensure knowledge base is created after vector index
     knowledgeBase.node.addDependency(vectorIndex);
 
-    // Add explicit dependency on the IAM role's default policy
     const defaultPolicyConstruct = knowledgeBaseRole.node.tryFindChild('DefaultPolicy');
     if (defaultPolicyConstruct) {
       const cfnPolicy = defaultPolicyConstruct.node.defaultChild as cdk.CfnResource;
@@ -201,37 +186,17 @@ export class USDAChatbotStack extends cdk.Stack {
       }
     }
 
-    // ==================== Web Crawler Data Sources ====================
-    // Data Source 1: USDA.gov - Trade, Food, Farming, Forestry sections
-    const usdaGovDataSource = new bedrock.CfnDataSource(this, 'UsdaGovDataSource', {
-      name: 'usdagov',
+    // ==================== S3 Data Source (replaces web crawler data sources) ====================
+    // Points to the web-crawler's S3 output bucket. The crawler writes markdown + PDFs
+    // under jobs/{JOB_ID}/all/markdown/ and jobs/{JOB_ID}/pdfs/
+    const s3DataSource = new bedrock.CfnDataSource(this, 'CrawlerS3DataSource', {
+      name: 'crawler-s3',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
       dataSourceConfiguration: {
-        type: 'WEB',
-        webConfiguration: {
-          sourceConfiguration: {
-            urlConfiguration: {
-              seedUrls: [
-                { url: 'https://www.usda.gov/trade-and-markets/' },
-                { url: 'https://www.usda.gov/about-food/' },
-                { url: 'https://www.usda.gov/farming-and-ranching/' },
-                { url: 'https://www.usda.gov/forestry/' },
-              ],
-            },
-          },
-          crawlerConfiguration: {
-            crawlerLimits: {
-              maxPages: 25000,
-              rateLimit: 300,
-            },
-            scope: 'HOST_ONLY',
-            inclusionFilters: [
-              'https://www\\.usda\\.gov/trade-and-markets(/.*)?$',
-              'https://www\\.usda\\.gov/about-food(/.*)?$',
-              'https://www\\.usda\\.gov/farming-and-ranching(/.*)?$',
-              'https://www\\.usda\\.gov/forestry(/.*)?$',
-            ],
-          },
+        type: 'S3',
+        s3Configuration: {
+          bucketArn: crawlerBucket.bucketArn,
+          inclusionPrefixes: ['jobs/'],
         },
       },
       vectorIngestionConfiguration: {
@@ -243,91 +208,9 @@ export class USDAChatbotStack extends cdk.Stack {
         },
       },
     });
-    usdaGovDataSource.addDependency(knowledgeBase);
+    s3DataSource.addDependency(knowledgeBase);
 
-    // Data Source 2: USDA.gov v2 - Sustainability and About sections
-    const usdaGov2DataSource = new bedrock.CfnDataSource(this, 'UsdaGov2DataSource', {
-      name: 'usdagov2',
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: 'WEB',
-        webConfiguration: {
-          sourceConfiguration: {
-            urlConfiguration: {
-              seedUrls: [
-                { url: 'https://www.usda.gov/sustainability/' },
-                { url: 'https://www.usda.gov/about/' },
-              ],
-            },
-          },
-          crawlerConfiguration: {
-            crawlerLimits: {
-              maxPages: 25000,
-              rateLimit: 300,
-            },
-            scope: 'HOST_ONLY',
-            inclusionFilters: [
-              'https://www\\.usda\\.gov/sustainability(/.*)?$',
-              'https://www\\.usda\\.gov/about(/.*)?$',
-            ],
-          },
-        },
-      },
-      vectorIngestionConfiguration: {
-        parsingConfiguration: {
-          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
-          bedrockFoundationModelConfiguration: {
-            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
-          },
-        },
-      },
-    });
-    usdaGov2DataSource.addDependency(knowledgeBase);
-
-    // Data Source 3: Farmers.gov - Full site crawl
-    const farmersGovDataSource = new bedrock.CfnDataSource(this, 'FarmersGovDataSource', {
-      name: 'farmersgov',
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: 'WEB',
-        webConfiguration: {
-          sourceConfiguration: {
-            urlConfiguration: {
-              seedUrls: [
-                { url: 'https://www.farmers.gov/' },
-              ],
-            },
-          },
-          crawlerConfiguration: {
-            crawlerLimits: {
-              maxPages: 25000,
-              rateLimit: 200,
-            },
-            scope: 'HOST_ONLY',
-          },
-        },
-      },
-      vectorIngestionConfiguration: {
-        parsingConfiguration: {
-          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
-          bedrockFoundationModelConfiguration: {
-            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
-          },
-        },
-      },
-    });
-    farmersGovDataSource.addDependency(knowledgeBase);
-
-    // ==================== Daily Knowledge Base Sync (EventBridge + Lambda) ====================
-    // Each data source is triggered by its own EventBridge rule, staggered 1 hour apart.
-    // Bedrock does not allow concurrent ingestion jobs on the same Knowledge Base,
-    // so spacing them out avoids ConflictException errors.
-    //
-    // Schedule (all times UTC, off-peak US hours):
-    //   4:00 AM UTC (8 PM PST / 11 PM EST) → farmersgov
-    //   5:00 AM UTC (9 PM PST / 12 AM EST) → usdagov2
-    //   6:00 AM UTC (10 PM PST / 1 AM EST) → usdagov
-
+    // ==================== KB Sync Lambda (triggers crawl + ingestion) ====================
     const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
@@ -341,62 +224,93 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
-    // Lambda handles a single data source per invocation.
-    // The data source name is passed via the EventBridge event input.
+    // ECS permissions to trigger crawl tasks
+    kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['ecs:RunTask'],
+      resources: ['*'],
+    }));
+
+    kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['iam:PassRole'],
+      resources: ['*'],
+      conditions: {
+        StringLike: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
+      },
+    }));
+
     const kbSyncHandler = new lambda.Function(this, 'KBSyncHandler', {
       functionName: 'AskUSDA-KBSyncHandler',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromInline(`
 const { BedrockAgentClient, StartIngestionJobCommand } = require('@aws-sdk/client-bedrock-agent');
+const { ECSClient, RunTaskCommand } = require('@aws-sdk/client-ecs');
 
-const client = new BedrockAgentClient({});
+const bedrockClient = new BedrockAgentClient({});
+const ecsClient = new ECSClient({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
 exports.handler = async (event) => {
   console.log('Event:', JSON.stringify(event, null, 2));
+  const action = event.action || 'ingest';
 
-  const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
-  const dataSourceName = event.dataSourceName;
+  // Action: crawl — trigger ECS crawl task
+  if (action === 'crawl') {
+    const url = event.url || 'https://www.usda.gov/about-food/';
+    const maxPages = event.maxPages || '500';
+    const scopeType = event.scopeType || 'host';
+    const jobId = event.jobId || '';
 
-  if (!dataSourceName) {
-    throw new Error('Missing dataSourceName in event input');
-  }
+    const overrides = [
+      { name: 'SEED_URL', value: url },
+      { name: 'MAX_PAGES', value: String(maxPages) },
+      { name: 'SCOPE_TYPE', value: scopeType },
+      { name: 'USE_BROWSER', value: 'on' },
+      { name: 'PDF_SCOPE', value: 'all' },
+      { name: 'DOC_SCOPE', value: 'all' },
+    ];
+    if (jobId) overrides.push({ name: 'JOB_ID', value: jobId });
 
-  const dataSourceEnvMap = {
-    farmersgov: process.env.DATA_SOURCE_ID_FARMERSGOV,
-    usdagov2: process.env.DATA_SOURCE_ID_USDAGOV2,
-    usdagov: process.env.DATA_SOURCE_ID_USDAGOV,
-  };
-
-  const dataSourceId = dataSourceEnvMap[dataSourceName];
-  if (!dataSourceId) {
-    throw new Error('Unknown or unconfigured data source: ' + dataSourceName);
-  }
-
-  console.log('Starting ingestion for data source:', dataSourceName, '(' + dataSourceId + ')');
-
-  try {
-    const response = await client.send(new StartIngestionJobCommand({
-      knowledgeBaseId,
-      dataSourceId,
+    const subnets = (process.env.CRAWLER_SUBNETS || '').split(',').filter(Boolean);
+    const resp = await ecsClient.send(new RunTaskCommand({
+      cluster: process.env.CRAWLER_CLUSTER_ARN,
+      taskDefinition: process.env.CRAWLER_TASK_DEF_ARN,
+      launchType: 'FARGATE',
+      count: 1,
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets,
+          securityGroups: [process.env.CRAWLER_SG_ID],
+          assignPublicIp: 'ENABLED',
+        },
+      },
+      overrides: {
+        containerOverrides: [{
+          name: process.env.CRAWLER_CONTAINER_NAME,
+          environment: overrides,
+        }],
+      },
     }));
 
-    const jobId = response.ingestionJob?.ingestionJobId;
-    console.log('Successfully started ingestion for', dataSourceName, '- job ID:', jobId);
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        dataSourceName,
-        dataSourceId,
-        status: 'started',
-        ingestionJobId: jobId,
-      }),
-    };
-  } catch (error) {
-    console.error('Error starting ingestion for', dataSourceName, '(' + dataSourceId + '):', error.name, '-', error.message);
-    throw error;
+    const taskArn = resp.tasks?.[0]?.taskArn || 'unknown';
+    console.log('Crawl task started:', taskArn);
+    return { status: 'crawl_started', taskArn, url };
   }
+
+  // Action: ingest — start KB ingestion from S3
+  const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
+  const dataSourceId = process.env.DATA_SOURCE_ID;
+
+  console.log('Starting ingestion for S3 data source:', dataSourceId);
+  const response = await bedrockClient.send(new StartIngestionJobCommand({
+    knowledgeBaseId,
+    dataSourceId,
+  }));
+
+  const ingestionJobId = response.ingestionJob?.ingestionJobId;
+  console.log('Ingestion started, job ID:', ingestionJobId);
+  return { status: 'ingestion_started', ingestionJobId };
 };
       `),
       role: kbSyncLambdaRole,
@@ -404,37 +318,29 @@ exports.handler = async (event) => {
       memorySize: 128,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        DATA_SOURCE_ID_USDAGOV: usdaGovDataSource.attrDataSourceId,
-        DATA_SOURCE_ID_USDAGOV2: usdaGov2DataSource.attrDataSourceId,
-        DATA_SOURCE_ID_FARMERSGOV: farmersGovDataSource.attrDataSourceId,
+        DATA_SOURCE_ID: s3DataSource.attrDataSourceId,
+        CRAWLER_CLUSTER_ARN: crawlerClusterArn,
+        CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
+        CRAWLER_CONTAINER_NAME: crawlerContainerName,
+        CRAWLER_SUBNETS: crawlerSubnetIds,
+        CRAWLER_SG_ID: crawlerSecurityGroupId,
+        CRAWLER_REGION: 'us-west-2',
       },
     });
 
-    // Staggered EventBridge rules — one per data source, 1 hour apart
-    const syncSchedule = [
-      { id: 'FarmersGov', name: 'farmersgov', hour: '4', description: 'farmersgov sync at 4:00 AM UTC' },
-      { id: 'UsdaGov2',   name: 'usdagov2',   hour: '5', description: 'usdagov2 sync at 5:00 AM UTC' },
-      { id: 'UsdaGov',    name: 'usdagov',     hour: '6', description: 'usdagov sync at 6:00 AM UTC' },
-    ];
+    // Daily ingestion schedule (4 AM UTC)
+    const dailyIngestRule = new events.Rule(this, 'DailyKBIngestRule', {
+      ruleName: 'AskUSDA-DailyKBIngest',
+      description: 'Triggers daily Knowledge Base ingestion from crawler S3 data',
+      schedule: events.Schedule.cron({
+        minute: '0', hour: '4', day: '*', month: '*', year: '*',
+      }),
+    });
 
-    for (const ds of syncSchedule) {
-      const rule = new events.Rule(this, `DailyKBSync${ds.id}Rule`, {
-        ruleName: `AskUSDA-DailyKBSync-${ds.name}`,
-        description: `Triggers daily Knowledge Base ${ds.description}`,
-        schedule: events.Schedule.cron({
-          minute: '0',
-          hour: ds.hour,
-          day: '*',
-          month: '*',
-          year: '*',
-        }),
-      });
-
-      rule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
-        retryAttempts: 2,
-        event: events.RuleTargetInput.fromObject({ dataSourceName: ds.name }),
-      }));
-    }
+    dailyIngestRule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
+      retryAttempts: 2,
+      event: events.RuleTargetInput.fromObject({ action: 'ingest' }),
+    }));
 
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
@@ -447,42 +353,28 @@ exports.handler = async (event) => {
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
 
-    // Bedrock permissions - Foundation models (all regions for cross-region inference)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
-        // Allow Nova Pro in ALL regions (cross-region inference profile routes dynamically)
         'arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0',
         'arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0',
         'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0',
       ],
     }));
 
-    // Bedrock Inference Profile permissions (required for Nova Pro)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: [
-        'bedrock:InvokeModel',
-        'bedrock:InvokeModelWithResponseStream',
-        'bedrock:GetInferenceProfile',
-      ],
-      resources: [
-        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/*`,
-      ],
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/*`],
     }));
 
-    // Bedrock Knowledge Base permissions
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:Retrieve', 'bedrock:RetrieveAndGenerate'],
-      resources: [
-        `arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`,
-      ],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
-    // Bedrock Rerank permissions (required for RerankCommand in RAG pipeline)
-    // bedrock:Rerank is the API action, bedrock:InvokeModel is needed for the reranker foundation model
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:Rerank'],
@@ -492,25 +384,20 @@ exports.handler = async (event) => {
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
-      resources: [
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`,
-      ],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
     }));
 
-    // OpenSearch Serverless permissions
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['aoss:APIAccessAll'],
       resources: [vectorCollection.collectionArn],
     }));
 
-    // API Gateway Management permissions
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['execute-api:ManageConnections'],
       resources: [`arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:*/*`],
     }));
-
 
     // ==================== WebSocket Lambda ====================
     const webSocketHandler = new lambda.Function(this, 'WebSocketHandler', {
@@ -520,10 +407,7 @@ exports.handler = async (event) => {
       code: lambda.Code.fromAsset('lambda/websocket-handler', {
         bundling: {
           image: lambda.Runtime.NODEJS_20_X.bundlingImage,
-          command: [
-            'bash', '-c',
-            'npm install && cp -au . /asset-output'
-          ],
+          command: ['bash', '-c', 'npm install && cp -au . /asset-output'],
         },
       }),
       role: lambdaRole,
@@ -558,11 +442,9 @@ exports.handler = async (event) => {
     webSocketApi.addRoute('sendMessage', {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SendMessageIntegration', webSocketHandler),
     });
-
     webSocketApi.addRoute('submitFeedback', {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitFeedbackIntegration', webSocketHandler),
     });
-
     webSocketApi.addRoute('submitEscalation', {
       integration: new apigatewayv2_integrations.WebSocketLambdaIntegration('SubmitEscalationIntegration', webSocketHandler),
     });
@@ -571,10 +453,7 @@ exports.handler = async (event) => {
       webSocketApi,
       stageName: 'prod',
       autoDeploy: true,
-      throttle: {
-        rateLimit: 10,   // 10 requests per second per client
-        burstLimit: 20,  // Allow short bursts up to 20
-      },
+      throttle: { rateLimit: 10, burstLimit: 20 },
     });
 
     webSocketHandler.addEnvironment('WEBSOCKET_ENDPOINT', webSocketStage.callbackUrl);
@@ -595,14 +474,11 @@ exports.handler = async (event) => {
           { type: 'PROMPT_ATTACK', inputStrength: 'HIGH', outputStrength: 'NONE' },
         ],
       },
-      // Removed topicPolicyConfig - was too restrictive for legitimate USDA questions
     });
 
-    // Add guardrail to Lambda environment
     webSocketHandler.addEnvironment('GUARDRAIL_ID', guardrail.attrGuardrailId);
     webSocketHandler.addEnvironment('GUARDRAIL_VERSION', guardrail.attrVersion);
 
-    // Add guardrail permissions to Lambda
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:ApplyGuardrail'],
@@ -612,37 +488,21 @@ exports.handler = async (event) => {
     // ==================== Cognito User Pool for Admin Authentication ====================
     const adminUserPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'AskUSDA-AdminPool',
-      selfSignUpEnabled: false, // Only admins can create users
-      signInAliases: {
-        email: true, // Use email as the sign-in identifier
-      },
-      autoVerify: {
-        email: true,
-      },
-      standardAttributes: {
-        email: {
-          required: true,
-          mutable: true,
-        },
-      },
+      selfSignUpEnabled: false,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      standardAttributes: { email: { required: true, mutable: true } },
       passwordPolicy: {
-        minLength: 8,
-        requireLowercase: true,
-        requireUppercase: true,
-        requireDigits: true,
-        requireSymbols: false,
+        minLength: 8, requireLowercase: true, requireUppercase: true,
+        requireDigits: true, requireSymbols: false,
       },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    // App client for the admin dashboard
     const adminAppClient = adminUserPool.addClient('AdminAppClient', {
-      authFlows: {
-        userPassword: true,
-        userSrp: true,
-      },
-      generateSecret: false, // For browser-based apps
+      authFlows: { userPassword: true, userSrp: true },
+      generateSecret: false,
       preventUserExistenceErrors: true,
     });
 
@@ -654,7 +514,6 @@ exports.handler = async (event) => {
       ],
     });
 
-    // Grant DynamoDB access to admin Lambda
     conversationHistoryTable.grantReadWriteData(adminLambdaRole);
     escalationTable.grantReadWriteData(adminLambdaRole);
 
@@ -665,10 +524,7 @@ exports.handler = async (event) => {
       code: lambda.Code.fromAsset('lambda/admin-api', {
         bundling: {
           image: lambda.Runtime.NODEJS_20_X.bundlingImage,
-          command: [
-            'bash', '-c',
-            'npm install && cp -au . /asset-output'
-          ],
+          command: ['bash', '-c', 'npm install && cp -au . /asset-output'],
         },
       }),
       role: adminLambdaRole,
@@ -684,11 +540,7 @@ exports.handler = async (event) => {
     });
 
     // ==================== Admin HTTP API Gateway ====================
-    // Build allowed origins list: always include the Amplify frontend,
-    // and optionally localhost for development
-    const allowedOrigins = frontendOrigin !== '*'
-      ? [frontendOrigin]
-      : ['*']; // Only wildcard if amplifyAppId wasn't provided
+    const allowedOrigins = frontendOrigin !== '*' ? [frontendOrigin] : ['*'];
 
     const adminApi = new apigatewayv2.HttpApi(this, 'AdminApi', {
       apiName: 'AskUSDA-AdminAPI',
@@ -696,152 +548,44 @@ exports.handler = async (event) => {
       corsPreflight: {
         allowHeaders: ['Content-Type', 'Authorization'],
         allowMethods: [
-          apigatewayv2.CorsHttpMethod.GET,
-          apigatewayv2.CorsHttpMethod.POST,
-          apigatewayv2.CorsHttpMethod.DELETE,
-          apigatewayv2.CorsHttpMethod.OPTIONS,
+          apigatewayv2.CorsHttpMethod.GET, apigatewayv2.CorsHttpMethod.POST,
+          apigatewayv2.CorsHttpMethod.DELETE, apigatewayv2.CorsHttpMethod.OPTIONS,
         ],
         allowOrigins: allowedOrigins,
         maxAge: cdk.Duration.days(1),
       },
     });
 
-    // JWT Authorizer for Cognito
     const jwtAuthorizer = new apigatewayv2_authorizers.HttpJwtAuthorizer(
       'AdminJwtAuthorizer',
       `https://cognito-idp.${cdk.Aws.REGION}.amazonaws.com/${adminUserPool.userPoolId}`,
-      {
-        jwtAudience: [adminAppClient.userPoolClientId],
-      }
+      { jwtAudience: [adminAppClient.userPoolClientId] }
     );
 
-    // Add routes
-    const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration(
-      'AdminIntegration',
-      adminHandler
-    );
+    const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration('AdminIntegration', adminHandler);
 
-    // Protected routes (require Cognito auth)
-    adminApi.addRoutes({
-      path: '/metrics',
-      methods: [apigatewayv2.HttpMethod.GET],
-      integration: adminIntegration,
-      authorizer: jwtAuthorizer,
-    });
+    // Protected routes
+    for (const path of ['/metrics', '/feedback', '/escalations']) {
+      adminApi.addRoutes({ path, methods: [apigatewayv2.HttpMethod.GET], integration: adminIntegration, authorizer: jwtAuthorizer });
+    }
+    adminApi.addRoutes({ path: '/escalations/{id}', methods: [apigatewayv2.HttpMethod.DELETE], integration: adminIntegration, authorizer: jwtAuthorizer });
+    adminApi.addRoutes({ path: '/feedback/{id}', methods: [apigatewayv2.HttpMethod.DELETE], integration: adminIntegration, authorizer: jwtAuthorizer });
 
-    adminApi.addRoutes({
-      path: '/feedback',
-      methods: [apigatewayv2.HttpMethod.GET],
-      integration: adminIntegration,
-      authorizer: jwtAuthorizer,
-    });
-
-    adminApi.addRoutes({
-      path: '/escalations',
-      methods: [apigatewayv2.HttpMethod.GET],
-      integration: adminIntegration,
-      authorizer: jwtAuthorizer,
-    });
-
-    adminApi.addRoutes({
-      path: '/escalations/{id}',
-      methods: [apigatewayv2.HttpMethod.DELETE],
-      integration: adminIntegration,
-      authorizer: jwtAuthorizer,
-    });
-
-    adminApi.addRoutes({
-      path: '/feedback/{id}',
-      methods: [apigatewayv2.HttpMethod.DELETE],
-      integration: adminIntegration,
-      authorizer: jwtAuthorizer,
-    });
-
-    // Public routes (no auth required - for submitting feedback/escalations from chatbot)
-    adminApi.addRoutes({
-      path: '/feedback',
-      methods: [apigatewayv2.HttpMethod.POST],
-      integration: adminIntegration,
-    });
-
-    adminApi.addRoutes({
-      path: '/escalations',
-      methods: [apigatewayv2.HttpMethod.POST],
-      integration: adminIntegration,
-    });
+    // Public routes
+    adminApi.addRoutes({ path: '/feedback', methods: [apigatewayv2.HttpMethod.POST], integration: adminIntegration });
+    adminApi.addRoutes({ path: '/escalations', methods: [apigatewayv2.HttpMethod.POST], integration: adminIntegration });
 
     // ==================== Stack Outputs ====================
-    new cdk.CfnOutput(this, 'WebSocketUrl', {
-      value: webSocketStage.url,
-      description: 'WebSocket API URL',
-      exportName: 'AskUSDA-WebSocketUrl',
-    });
-
-    new cdk.CfnOutput(this, 'ConversationTableName', {
-      value: conversationHistoryTable.tableName,
-      description: 'DynamoDB Conversation History Table',
-      exportName: 'AskUSDA-ConversationTable',
-    });
-
-    new cdk.CfnOutput(this, 'KnowledgeBaseId', {
-      value: knowledgeBase.attrKnowledgeBaseId,
-      description: 'Bedrock Knowledge Base ID',
-      exportName: 'AskUSDA-KnowledgeBaseId',
-    });
-
-    new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', {
-      value: vectorCollection.collectionEndpoint,
-      description: 'OpenSearch Serverless Collection Endpoint',
-      exportName: 'AskUSDA-OpenSearchEndpoint',
-    });
-
-    new cdk.CfnOutput(this, 'UsdaGovDataSourceId', {
-      value: usdaGovDataSource.attrDataSourceId,
-      description: 'USDA.gov Data Source ID',
-      exportName: 'AskUSDA-UsdaGovDataSourceId',
-    });
-
-    new cdk.CfnOutput(this, 'UsdaGov2DataSourceId', {
-      value: usdaGov2DataSource.attrDataSourceId,
-      description: 'USDA.gov v2 Data Source ID',
-      exportName: 'AskUSDA-UsdaGov2DataSourceId',
-    });
-
-    new cdk.CfnOutput(this, 'FarmersGovDataSourceId', {
-      value: farmersGovDataSource.attrDataSourceId,
-      description: 'Farmers.gov Data Source ID',
-      exportName: 'AskUSDA-FarmersGovDataSourceId',
-    });
-
-    new cdk.CfnOutput(this, 'GuardrailId', {
-      value: guardrail.attrGuardrailId,
-      description: 'Bedrock Guardrail ID',
-      exportName: 'AskUSDA-GuardrailId',
-    });
-
-    new cdk.CfnOutput(this, 'AdminApiUrl', {
-      value: adminApi.apiEndpoint,
-      description: 'Admin API URL',
-      exportName: 'AskUSDA-AdminApiUrl',
-    });
-
-    new cdk.CfnOutput(this, 'EscalationTableName', {
-      value: escalationTable.tableName,
-      description: 'DynamoDB Escalation Requests Table',
-      exportName: 'AskUSDA-EscalationTable',
-    });
-
-    // Cognito Outputs
-    new cdk.CfnOutput(this, 'AdminUserPoolId', {
-      value: adminUserPool.userPoolId,
-      description: 'Cognito User Pool ID for admin authentication',
-      exportName: 'AskUSDA-AdminUserPoolId',
-    });
-
-    new cdk.CfnOutput(this, 'AdminUserPoolClientId', {
-      value: adminAppClient.userPoolClientId,
-      description: 'Cognito App Client ID for admin dashboard',
-      exportName: 'AskUSDA-AdminUserPoolClientId',
-    });
+    new cdk.CfnOutput(this, 'WebSocketUrl', { value: webSocketStage.url, description: 'WebSocket API URL', exportName: 'AskUSDA-WebSocketUrl' });
+    new cdk.CfnOutput(this, 'ConversationTableName', { value: conversationHistoryTable.tableName, description: 'DynamoDB Conversation History Table', exportName: 'AskUSDA-ConversationTable' });
+    new cdk.CfnOutput(this, 'KnowledgeBaseId', { value: knowledgeBase.attrKnowledgeBaseId, description: 'Bedrock Knowledge Base ID', exportName: 'AskUSDA-KnowledgeBaseId' });
+    new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', { value: vectorCollection.collectionEndpoint, description: 'OpenSearch Serverless Collection Endpoint', exportName: 'AskUSDA-OpenSearchEndpoint' });
+    new cdk.CfnOutput(this, 'S3DataSourceId', { value: s3DataSource.attrDataSourceId, description: 'S3 Data Source ID', exportName: 'AskUSDA-S3DataSourceId' });
+    new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucketName, description: 'Web Crawler S3 Bucket', exportName: 'AskUSDA-CrawlerBucket' });
+    new cdk.CfnOutput(this, 'GuardrailId', { value: guardrail.attrGuardrailId, description: 'Bedrock Guardrail ID', exportName: 'AskUSDA-GuardrailId' });
+    new cdk.CfnOutput(this, 'AdminApiUrl', { value: adminApi.apiEndpoint, description: 'Admin API URL', exportName: 'AskUSDA-AdminApiUrl' });
+    new cdk.CfnOutput(this, 'EscalationTableName', { value: escalationTable.tableName, description: 'DynamoDB Escalation Requests Table', exportName: 'AskUSDA-EscalationTable' });
+    new cdk.CfnOutput(this, 'AdminUserPoolId', { value: adminUserPool.userPoolId, description: 'Cognito User Pool ID', exportName: 'AskUSDA-AdminUserPoolId' });
+    new cdk.CfnOutput(this, 'AdminUserPoolClientId', { value: adminAppClient.userPoolClientId, description: 'Cognito App Client ID', exportName: 'AskUSDA-AdminUserPoolClientId' });
   }
 }
