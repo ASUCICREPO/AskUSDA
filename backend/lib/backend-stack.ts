@@ -8,8 +8,6 @@ import * as apigatewayv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authoriz
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
@@ -186,9 +184,9 @@ export class USDAChatbotStack extends cdk.Stack {
       }
     }
 
-    // ==================== S3 Data Source (replaces web crawler data sources) ====================
-    // Points to the web-crawler's S3 output bucket. The crawler writes markdown + PDFs
-    // under jobs/{JOB_ID}/all/markdown/ and jobs/{JOB_ID}/pdfs/
+    // ==================== S3 Data Source (original — uses FM parsing) ====================
+    // This is the existing data source your teammate may be using.
+    // Points to the raw crawler output under jobs/
     const s3DataSource = new bedrock.CfnDataSource(this, 'CrawlerS3DataSource', {
       name: 'crawler-s3',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
@@ -196,7 +194,7 @@ export class USDAChatbotStack extends cdk.Stack {
         type: 'S3',
         s3Configuration: {
           bucketArn: crawlerBucket.bucketArn,
-          inclusionPrefixes: ['ingestion/'],
+          inclusionPrefixes: ['jobs/'],
         },
       },
       vectorIngestionConfiguration: {
@@ -209,6 +207,23 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
     s3DataSource.addDependency(knowledgeBase);
+
+    // ==================== S3 Data Source v2 (new — default parsing, no throttling) ====================
+    // Points to the clean ingestion/ prefix with deduplicated content + Bedrock metadata.
+    // Uses default parser (text extraction) + default chunking (300 tokens).
+    // No FM model calls = no throttling, no 1000-file-per-job limit.
+    const s3DataSourceV2 = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceV2', {
+      name: 'crawler-s3-v2',
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: 'S3',
+        s3Configuration: {
+          bucketArn: crawlerBucket.bucketArn,
+          inclusionPrefixes: ['ingestion/'],
+        },
+      },
+    });
+    s3DataSourceV2.addDependency(knowledgeBase);
 
     // ==================== KB Sync Lambda (triggers crawl + ingestion) ====================
     const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
@@ -260,7 +275,8 @@ export class USDAChatbotStack extends cdk.Stack {
       memorySize: 1024,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        DATA_SOURCE_ID: s3DataSource.attrDataSourceId,
+        DATA_SOURCE_ID: s3DataSourceV2.attrDataSourceId,
+        DATA_SOURCE_ID_LEGACY: s3DataSource.attrDataSourceId,
         CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_CLUSTER_ARN: crawlerClusterArn,
         CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
@@ -270,20 +286,6 @@ export class USDAChatbotStack extends cdk.Stack {
         CRAWLER_REGION: 'us-west-2',
       },
     });
-
-    // Daily ingestion schedule (4 AM UTC)
-    const dailyIngestRule = new events.Rule(this, 'DailyKBIngestRule', {
-      ruleName: 'AskUSDA-DailyKBIngest',
-      description: 'Triggers daily Knowledge Base ingestion from crawler S3 data',
-      schedule: events.Schedule.cron({
-        minute: '0', hour: '4', day: '*', month: '*', year: '*',
-      }),
-    });
-
-    dailyIngestRule.addTarget(new targets.LambdaFunction(kbSyncHandler, {
-      retryAttempts: 2,
-      event: events.RuleTargetInput.fromObject({ action: 'ingest' }),
-    }));
 
     // ==================== IAM Role for Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
@@ -525,7 +527,8 @@ export class USDAChatbotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ConversationTableName', { value: conversationHistoryTable.tableName, description: 'DynamoDB Conversation History Table', exportName: 'AskUSDA-ConversationTable' });
     new cdk.CfnOutput(this, 'KnowledgeBaseId', { value: knowledgeBase.attrKnowledgeBaseId, description: 'Bedrock Knowledge Base ID', exportName: 'AskUSDA-KnowledgeBaseId' });
     new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', { value: vectorCollection.collectionEndpoint, description: 'OpenSearch Serverless Collection Endpoint', exportName: 'AskUSDA-OpenSearchEndpoint' });
-    new cdk.CfnOutput(this, 'S3DataSourceId', { value: s3DataSource.attrDataSourceId, description: 'S3 Data Source ID', exportName: 'AskUSDA-S3DataSourceId' });
+    new cdk.CfnOutput(this, 'S3DataSourceId', { value: s3DataSource.attrDataSourceId, description: 'S3 Data Source ID (legacy, FM parsing)', exportName: 'AskUSDA-S3DataSourceId' });
+    new cdk.CfnOutput(this, 'S3DataSourceV2Id', { value: s3DataSourceV2.attrDataSourceId, description: 'S3 Data Source V2 ID (default parsing)', exportName: 'AskUSDA-S3DataSourceV2Id' });
     new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucketName, description: 'Web Crawler S3 Bucket', exportName: 'AskUSDA-CrawlerBucket' });
     new cdk.CfnOutput(this, 'GuardrailId', { value: guardrail.attrGuardrailId, description: 'Bedrock Guardrail ID', exportName: 'AskUSDA-GuardrailId' });
     new cdk.CfnOutput(this, 'AdminApiUrl', { value: adminApi.apiEndpoint, description: 'Admin API URL', exportName: 'AskUSDA-AdminApiUrl' });

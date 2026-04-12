@@ -318,10 +318,8 @@ exports.handler = async (event) => {
     return { status: 'prepare_complete', ...result };
   }
 
-  // Default: ingest = prepare + start Bedrock ingestion.
-  // NOTE: Bedrock's BEDROCK_FOUNDATION_MODEL parsing has a 1000-file-per-job limit.
-  // For initial bulk load with >1000 files, run this Lambda multiple times —
-  // each run will process the next batch of 1000 new files.
+  // Default: ingest = prepare + start Bedrock ingestion on the v2 data source (default parsing).
+  // Default parsing has no per-job file limit, so all files are processed in one go.
   const prepResult = await prepareIngestion();
   console.log('[INGEST] Preparation result:', prepResult);
 
@@ -337,8 +335,5 @@ exports.handler = async (event) => {
     status: 'ingestion_started',
     ingestionJobId,
     preparation: prepResult,
-    note: prepResult.copied > 1000
-      ? `${prepResult.copied} files prepared. Bedrock processes max 1000 new files per sync. Run ingest again after this job completes to process remaining files.`
-      : undefined,
   };
 };
