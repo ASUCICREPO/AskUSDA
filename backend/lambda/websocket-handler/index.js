@@ -3,6 +3,7 @@ const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
 const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
 const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { v4: uuidv4 } = require('uuid');
 
 // Initialize clients
@@ -10,6 +11,7 @@ const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const bedrockAgentClient = new BedrockAgentRuntimeClient({});
 const bedrockRuntimeClient = new BedrockRuntimeClient({});
+const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
 // Environment variables
 const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
@@ -18,6 +20,61 @@ const ESCALATION_TABLE = process.env.ESCALATION_TABLE;
 const GUARDRAIL_ID = process.env.GUARDRAIL_ID;
 const GUARDRAIL_VERSION = process.env.GUARDRAIL_VERSION || 'DRAFT';
 const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
+const CRAWLER_BUCKET = process.env.CRAWLER_BUCKET;
+
+// Resolve a real website URL from an S3 URI by reading the crawler metadata file.
+// Works for all content types: markdown, pdfs, and docs.
+// Ingestion path: s3://bucket/ingestion/{type}/{filename}
+// Crawler metadata paths:
+//   jobs/{id}/all/metadata/{hash}.md.metadata.json  (for markdown)
+//   jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json (for pdfs)
+//   jobs/{id}/docs/metadata/{name}.xlsx.metadata.json (for docs)
+async function resolveSourceUrl(s3Uri) {
+  if (!CRAWLER_BUCKET || !s3Uri.includes(CRAWLER_BUCKET)) return s3Uri;
+  try {
+    const key = s3Uri.replace(`s3://${CRAWLER_BUCKET}/`, '');
+
+    // If the file is in ingestion/, try to read the co-located Bedrock metadata
+    if (key.startsWith('ingestion/')) {
+      const bedrockMetaKey = key + '.metadata.json';
+      try {
+        const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: bedrockMetaKey }));
+        const chunks = [];
+        for await (const chunk of resp.Body) chunks.push(chunk);
+        const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        const url = meta.metadataAttributes?.source_url;
+        if (url) return url;
+      } catch {}
+    }
+
+    // Fallback: try the original crawler metadata paths under jobs/
+    // For markdown: jobs/{id}/all/markdown/{hash}.md → jobs/{id}/all/metadata/{hash}.md.metadata.json
+    // For pdfs:     jobs/{id}/pdfs/{name}.pdf → jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json
+    // For docs:     jobs/{id}/docs/{name}.xlsx → jobs/{id}/docs/metadata/{name}.xlsx.metadata.json
+    let metadataKey;
+    if (key.includes('/all/markdown/')) {
+      metadataKey = key.replace('/all/markdown/', '/all/metadata/') + '.metadata.json';
+    } else if (key.includes('/pdfs/') && !key.includes('/metadata/')) {
+      const parts = key.split('/pdfs/');
+      metadataKey = parts[0] + '/pdfs/metadata/' + parts[1] + '.metadata.json';
+    } else if (key.includes('/docs/') && !key.includes('/metadata/')) {
+      const parts = key.split('/docs/');
+      metadataKey = parts[0] + '/docs/metadata/' + parts[1] + '.metadata.json';
+    }
+
+    if (metadataKey) {
+      const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: metadataKey }));
+      const chunks = [];
+      for await (const chunk of resp.Body) chunks.push(chunk);
+      const meta = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+      return meta.source_url || s3Uri;
+    }
+
+    return s3Uri;
+  } catch {
+    return s3Uri;
+  }
+}
 
 // Helper to send message to WebSocket client
 async function sendToClient(connectionId, data) {
@@ -106,26 +163,60 @@ async function queryKnowledgeBase(question, sessionId) {
 
     const answer = response.output?.text || "I couldn't generate a response. Please try again.";
 
-    // Extract citations from the response
-    const citations = [];
+    // Extract citations from the RetrieveAndGenerate response — these are the
+    // exact sources the model used to generate the answer.
+    // Priority: metadata.source_url > webLocation > s3Location (with S3 fallback)
+    const rawCitations = [];
+    const seen = new Set();
     if (response.citations) {
       for (const citation of response.citations) {
         for (const ref of (citation.retrievedReferences || [])) {
-          const source = ref.location?.webLocation?.url ||
-                         ref.location?.s3Location?.uri ||
-                         'Unknown source';
-          // Avoid duplicate sources
-          if (!citations.find(c => c.source === source)) {
-            citations.push({
-              id: citations.length + 1,
+          const metadata = ref.metadata || {};
+          const sourceUrl = metadata.source_url || metadata['source_url'] || '';
+          const webUrl = ref.location?.webLocation?.url || '';
+          const s3Uri = ref.location?.s3Location?.uri || '';
+          const source = sourceUrl || webUrl || s3Uri || '';
+          const title = metadata.title || '';
+
+          if (source && !seen.has(source)) {
+            seen.add(source);
+            rawCitations.push({
               text: (ref.content?.text || '').substring(0, 200),
-              source: source,
-              score: 0,
+              source,
+              title,
+              needsResolve: !sourceUrl && !webUrl && !!s3Uri,
             });
           }
         }
       }
     }
+
+    // Fallback: resolve S3 URIs to real URLs by reading crawler metadata from S3
+    const resolved = await Promise.all(rawCitations.map(async (r) => {
+      if (r.needsResolve) {
+        const realUrl = await resolveSourceUrl(r.source);
+        return { ...r, source: realUrl };
+      }
+      return r;
+    }));
+
+    // Deduplicate after resolution (two S3 URIs might map to the same URL)
+    const citations = [];
+    const finalSeen = new Set();
+    for (const r of resolved) {
+      if (!finalSeen.has(r.source)) {
+        finalSeen.add(r.source);
+        citations.push({
+          id: citations.length + 1,
+          text: r.text,
+          source: r.source,
+          title: r.title,
+          score: 0,
+        });
+      }
+    }
+
+    const maxConfidence = 0;
 
     console.log('[PIPELINE] Complete:', {
       question,
@@ -138,7 +229,7 @@ async function queryKnowledgeBase(question, sessionId) {
     return {
       answer,
       citations,
-      maxConfidence: 0,
+      maxConfidence,
       sessionId: sessionId || uuidv4(),
       responseTimeMs,
     };
