@@ -17,6 +17,9 @@ phases:
       - cd backend
       - echo "Installing backend dependencies..."
       - npm ci
+      - echo "Installing Lambda dependencies..."
+      - cd lambda/websocket-handler && npm ci && cd ../..
+      - cd lambda/kb-sync-handler && npm ci && cd ../..
       - echo "Bootstrapping CDK..."
       - cdk bootstrap --require-approval never --context amplifyAppId=$AMPLIFY_APP_ID
 
