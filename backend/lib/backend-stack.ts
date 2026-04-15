@@ -225,6 +225,22 @@ export class USDAChatbotStack extends cdk.Stack {
     });
     s3DataSourceV2.addDependency(knowledgeBase);
 
+    // ==================== S3 Data Source v3 (batch crawl — uses ingestion-v3/ prefix) ====================
+    // Points to batch crawl output from urls.yaml jobs.
+    // Uses default parser (text extraction) + default chunking (300 tokens).
+    const s3DataSourceV3 = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceV3', {
+      name: 'crawler-s3-v3',
+      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
+      dataSourceConfiguration: {
+        type: 'S3',
+        s3Configuration: {
+          bucketArn: crawlerBucket.bucketArn,
+          inclusionPrefixes: ['ingestion-v3/'],
+        },
+      },
+    });
+    s3DataSourceV3.addDependency(knowledgeBase);
+
     // ==================== KB Sync Lambda (triggers crawl + ingestion) ====================
     const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -277,6 +293,7 @@ export class USDAChatbotStack extends cdk.Stack {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         DATA_SOURCE_ID: s3DataSourceV2.attrDataSourceId,
         DATA_SOURCE_ID_LEGACY: s3DataSource.attrDataSourceId,
+        DATA_SOURCE_ID_V3: s3DataSourceV3.attrDataSourceId,
         CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_CLUSTER_ARN: crawlerClusterArn,
         CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
@@ -529,6 +546,7 @@ export class USDAChatbotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', { value: vectorCollection.collectionEndpoint, description: 'OpenSearch Serverless Collection Endpoint', exportName: 'AskUSDA-OpenSearchEndpoint' });
     new cdk.CfnOutput(this, 'S3DataSourceId', { value: s3DataSource.attrDataSourceId, description: 'S3 Data Source ID (legacy, FM parsing)', exportName: 'AskUSDA-S3DataSourceId' });
     new cdk.CfnOutput(this, 'S3DataSourceV2Id', { value: s3DataSourceV2.attrDataSourceId, description: 'S3 Data Source V2 ID (default parsing)', exportName: 'AskUSDA-S3DataSourceV2Id' });
+    new cdk.CfnOutput(this, 'S3DataSourceV3Id', { value: s3DataSourceV3.attrDataSourceId, description: 'S3 Data Source V3 ID (batch crawl)', exportName: 'AskUSDA-S3DataSourceV3Id' });
     new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucketName, description: 'Web Crawler S3 Bucket', exportName: 'AskUSDA-CrawlerBucket' });
     new cdk.CfnOutput(this, 'GuardrailId', { value: guardrail.attrGuardrailId, description: 'Bedrock Guardrail ID', exportName: 'AskUSDA-GuardrailId' });
     new cdk.CfnOutput(this, 'AdminApiUrl', { value: adminApi.apiEndpoint, description: 'Admin API URL', exportName: 'AskUSDA-AdminApiUrl' });

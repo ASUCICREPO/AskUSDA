@@ -7,7 +7,7 @@ const ecsClient = new ECSClient({ region: process.env.CRAWLER_REGION || 'us-west
 const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
 const BUCKET = process.env.CRAWLER_BUCKET;
-const INGESTION_PREFIX = 'ingestion/';
+const INGESTION_PREFIX = 'ingestion-v3/';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB — Bedrock's hard limit
 
 // Crawler infrastructure files that should never be ingested
@@ -324,7 +324,7 @@ exports.handler = async (event) => {
   console.log('[INGEST] Preparation result:', prepResult);
 
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
-  const dataSourceId = process.env.DATA_SOURCE_ID;
+  const dataSourceId = process.env.DATA_SOURCE_ID_V3;
 
   console.log('[INGEST] Starting ingestion for data source:', dataSourceId);
   const response = await bedrockClient.send(new StartIngestionJobCommand({ knowledgeBaseId, dataSourceId }));
