@@ -219,7 +219,7 @@ async function buildCitations(results) {
   const seen = new Set();
   const raw = [];
 
-  for (const ref of results.filter(r => (r.score ?? 1) > 0.5)) {
+  for (const ref of results.filter(r => (r.score ?? 1) > 0.3)) {
     const metadata = ref.metadata || {};
     const sourceUrl = metadata.source_url || metadata['source_url'] || '';
     const webUrl = ref.location?.webLocation?.url || '';
@@ -231,6 +231,7 @@ async function buildCitations(results) {
       seen.add(source);
       raw.push({ source, title, text: (ref.content?.text || '').substring(0, 200), needsResolve: !sourceUrl && !webUrl && !!s3Uri });
     }
+    if (raw.length >= 3) break;
   }
 
   const resolved = await Promise.all(raw.map(async (r) => {
