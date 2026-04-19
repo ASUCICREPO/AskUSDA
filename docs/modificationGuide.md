@@ -31,12 +31,15 @@ This document explains how to modify and extend AskUSDA. Whether you want to add
 ```
 ├── backend/
 │   ├── bin/backend.ts                 # CDK app entry point
-│   ├── lib/backend-stack.ts           # CDK stack (DynamoDB, OpenSearch, KB, Lambdas, APIs, Cognito)
+│   ├── lib/backend-stack.ts           # CDK stack (DynamoDB, S3 Vectors, KB, Lambdas, APIs, Cognito)
 │   └── lambda/
 │       ├── websocket-handler/         # WebSocket Lambda (chat, feedback, escalation)
 │       │   ├── index.js
 │       │   └── package.json
-│       └── admin-api/                 # Admin HTTP API Lambda (metrics, feedback, escalations)
+│       ├── admin-api/                 # Admin HTTP API Lambda (metrics, feedback, escalations)
+│       │   ├── index.js
+│       │   └── package.json
+│       └── kb-sync-handler/           # KB sync Lambda (web crawler + ingestion)
 │           ├── index.js
 │           └── package.json
 ├── frontend/
@@ -145,8 +148,9 @@ export default function ProtectedPage() {
 
 | Lambda | File | Purpose |
 |--------|------|---------|
-| **AskUSDA-WebSocketHandler** | `lambda/websocket-handler/index.js` | WebSocket routes: `sendMessage`, `submitFeedback`, `submitEscalation`; Bedrock KB RetrieveAndGenerate, guardrails |
+| **AskUSDA-WebSocketHandler** | `lambda/websocket-handler/index.js` | WebSocket routes: `sendMessage`, `submitFeedback`, `submitEscalation`; Bedrock KB Retrieve + ConverseStream (streaming), guardrails |
 | **AskUSDA-AdminHandler** | `lambda/admin-api/index.js` | HTTP Admin API: GET /metrics, GET/POST /feedback, GET/POST /escalations, DELETE /escalations/{id}, DELETE /feedback/{id} |
+| **AskUSDA-KBSyncHandler** | `lambda/kb-sync-handler/index.js` | Orchestrates ECS Fargate web crawler tasks and triggers KB ingestion |
 
 ### Adding New Lambda Functions
 
@@ -178,10 +182,10 @@ exports.handler = async (event) => {
 The stack is organized roughly as:
 
 1. **DynamoDB** (~lines 19–65): Conversation History, Escalation Requests (and GSIs).
-2. **OpenSearch Serverless** (~67–109): Vector collection and index for the Knowledge Base.
-3. **Bedrock Knowledge Base** (~134–169): KB definition with Titan embeddings and OpenSearch storage.
-4. **Web Crawler Data Sources** (~171–286): Three data sources (`usdagov`, `usdagov2`, `farmersgov`) with web crawlers.
-5. **Daily KB Sync** (~288–386): EventBridge rule + Lambda to sync all 3 data sources daily.
+2. **S3 Vectors** (~67–109): Vector bucket and index for the Knowledge Base.
+3. **Bedrock Knowledge Base** (~134–169): KB definition with Titan embeddings and S3 Vectors storage.
+4. **S3 Data Source** (~171–220): S3 data source (`crawler-s3-v3`) with fixed-size chunking (200 tokens, 15% overlap).
+5. **KB Sync Lambda + EventBridge** (~222–320): Daily KB sync via ECS Fargate web crawler + ingestion.
 6. **WebSocket Lambda + API** (~388–509): Handler, WebSocket API (`$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`).
 7. **Guardrail** (~511–539): Bedrock guardrail for content filtering.
 8. **Cognito** (~541–576): Admin User Pool and app client.
@@ -194,34 +198,19 @@ When you add resources, follow existing patterns (environments, roles, dependenc
 
 ## Knowledge Base Modifications
 
-### Adding or Changing Web Crawler URLs
+### Adding or Changing Data Sources
 
-**Location**: `backend/lib/backend-stack.ts` (Web Crawler data sources, ~lines 171–286)
+**Location**: `backend/lib/backend-stack.ts` (S3 Data Source definition)
 
-The Knowledge Base uses three **web crawler** data sources. Each data source crawls specific sections of USDA websites:
+The Knowledge Base uses an **S3 data source** (`crawler-s3-v3`) that ingests from the web crawler output bucket (`ingestion-v3/` prefix). The web crawler is an ECS Fargate task orchestrated by the `KBSyncHandler` Lambda.
 
-- **usdagov** (~lines 173–213): Trade, food, farming, forestry sections of usda.gov
-- **usdagov2** (~lines 216–252): Sustainability and about sections of usda.gov
-- **farmersgov** (~lines 255–286): Full farmers.gov site
+To modify what content is crawled, update the crawler configuration in `backend/lambda/kb-sync-handler/index.js`, which controls the seed URLs, inclusion filters, and crawl parameters.
 
-To add seed URLs to an existing data source:
-
-```typescript
-seedUrls: [
-  { url: 'https://www.usda.gov/trade-and-markets/' },
-  { url: 'https://www.usda.gov/about-food/' },
-  // Add more:
-  { url: 'https://www.usda.gov/new-section/' },
-],
-```
-
-To add a new data source, create a new `bedrock.CfnDataSource` following the same pattern as the existing ones. Remember to also add the new data source ID to the `KBSyncHandler` Lambda environment variables so it gets included in daily syncs.
-
-You can also adjust `crawlerConfiguration` (e.g. `rateLimit`, `scope`, `inclusionFilters`). After changes, redeploy and trigger a sync (Bedrock console or EventBridge-triggered job).
+To add a new S3 data source, create a new `bedrock.CfnDataSource` following the same pattern as the existing one. Remember to also add the new data source ID to the `KBSyncHandler` Lambda environment variables so it gets included in syncs.
 
 ### Chunking and Ingestion
 
-Chunking for the web crawler is handled by Bedrock default behavior. The stack does not explicitly set `chunkingConfiguration` for this data source. To change chunking or ingestion, you would need to use supported Bedrock data source options in the CDK (if available) or modify via the Bedrock console.
+The data source uses **fixed-size chunking** (200 tokens, 15% overlap) configured in the CDK stack. The S3 Vectors index has `AMAZON_BEDROCK_TEXT` as a non-filterable metadata key to accommodate chunk content exceeding the 2KB filterable limit. To change chunking parameters, update `vectorIngestionConfiguration` in the data source definition in `backend-stack.ts`.
 
 ### Syncing the Knowledge Base
 
@@ -236,7 +225,7 @@ aws bedrock-agent start-ingestion-job \
   --data-source-id YOUR_DATA_SOURCE_ID
 ```
 
-Use `KnowledgeBaseId` and the relevant data source ID (`UsdaGovDataSourceId`, `UsdaGov2DataSourceId`, or `FarmersGovDataSourceId`) from the CDK outputs.
+Use `KnowledgeBaseId` and `S3DataSourceV3Id` from the CDK outputs.
 
 ---
 
@@ -244,33 +233,25 @@ Use `KnowledgeBaseId` and the relevant data source ID (`UsdaGovDataSourceId`, `U
 
 ### Generation Model (Chat Responses)
 
-**Location**: `backend/lambda/websocket-handler/index.js` (inside `queryKnowledgeBase`, ~lines 76–101)
+**Location**: `backend/lambda/websocket-handler/index.js` (inside `streamResponse` and `retrieveFromKB`)
 
-The chat uses **RetrieveAndGenerate** with a Bedrock model. The model ARN and inference settings are in the `params` object:
+The chat uses **RetrieveCommand** to fetch relevant context from the Knowledge Base, then **ConverseStreamCommand** to generate a streaming response with Nova Pro. Key parameters:
 
 ```javascript
-knowledgeBaseConfiguration: {
-  knowledgeBaseId: KNOWLEDGE_BASE_ID,
-  modelArn: `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0`,
-  retrievalConfiguration: {
-    vectorSearchConfiguration: {
-      numberOfResults: 5,   // Increase for more context
-    },
-  },
-  generationConfiguration: {
-    inferenceConfig: {
-      textInferenceConfig: {
-        maxTokens: 2048,
-        temperature: 0.7,
-        topP: 0.9,
-      },
-    },
+// Retrieval (retrieveFromKB)
+retrievalConfiguration: {
+  vectorSearchConfiguration: {
+    numberOfResults: 25,
+    rerankingConfiguration: { /* Amazon Rerank v1 */ },
   },
 },
+
+// Generation (streamResponse)
+inferenceConfig: { maxTokens: 1024, temperature: 0.3, topP: 0.9 },
 ```
 
-- **Model**: Change `modelArn` to another Bedrock model (e.g. `anthropic.claude-3-sonnet-*`, `anthropic.claude-3-haiku-*`). Ensure the model supports RetrieveAndGenerate in your region.
-- **Retrieval**: Adjust `numberOfResults` to change how many KB chunks are used.
+- **Model**: Change the model ARN in `streamResponse` to another Bedrock model. Ensure the model supports `ConverseStream` in your region.
+- **Retrieval**: Adjust `numberOfResults` to change how many KB chunks are used for context.
 - **Generation**: Tune `maxTokens`, `temperature`, and `topP` as needed.
 
 Redeploy the WebSocket Lambda after changes.
@@ -283,7 +264,7 @@ Redeploy the WebSocket Lambda after changes.
 embeddingModelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
 ```
 
-To switch to another embedding model (e.g. `amazon.titan-embed-text-v1`), update this ARN. The OpenSearch index uses **1024-dimensional** vectors (Titan Embed v2). Changing the embedding model usually requires a new index and re-ingestion; avoid changing it unless necessary.
+To switch to another embedding model (e.g. `amazon.titan-embed-text-v1`), update this ARN. The S3 Vectors index uses **1024-dimensional** vectors (Titan Embed v2). Changing the embedding model requires a new vector index and re-ingestion; avoid changing it unless necessary.
 
 ---
 

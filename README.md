@@ -64,7 +64,7 @@ AskUSDA is an AI-powered chatbot that helps the public, farmers, and ranchers qu
 ### Key Features
 
 - **AI-Powered Conversations** using AWS Bedrock with Nova Pro
-- **Knowledge Base Integration** with USDA.gov and farmers.gov content via three web crawler data sources and OpenSearch Serverless
+- **Knowledge Base Integration** with USDA.gov and farmers.gov content via S3 data source and S3 Vectors
 - **Real-time Streaming Responses** over WebSockets for a natural chat experience
 - **Citation Support** with source references for transparency
 - **Thumbs Up/Down Feedback** stored per message for analytics

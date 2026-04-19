@@ -379,7 +379,7 @@ else
       --policy-name "ComputeAndDataPolicy" \
       --policy-document "$COMPUTE_POLICY"
 
-    # --- Policy 4: AI & Search (Bedrock, OpenSearch Serverless) ---
+    # --- Policy 4: AI & Search (Bedrock, S3 Vectors) ---
     AI_POLICY='{
       "Version": "2012-10-17",
       "Statement": [
@@ -410,28 +410,25 @@ else
               "Resource": "*"
           },
           {
-              "Sid": "OpenSearchServerless",
+              "Sid": "S3Vectors",
               "Effect": "Allow",
               "Action": [
-                  "aoss:CreateCollection",
-                  "aoss:DeleteCollection",
-                  "aoss:UpdateCollection",
-                  "aoss:BatchGetCollection",
-                  "aoss:ListCollections",
-                  "aoss:CreateSecurityPolicy",
-                  "aoss:DeleteSecurityPolicy",
-                  "aoss:UpdateSecurityPolicy",
-                  "aoss:GetSecurityPolicy",
-                  "aoss:ListSecurityPolicies",
-                  "aoss:CreateAccessPolicy",
-                  "aoss:DeleteAccessPolicy",
-                  "aoss:UpdateAccessPolicy",
-                  "aoss:GetAccessPolicy",
-                  "aoss:ListAccessPolicies",
-                  "aoss:APIAccessAll",
-                  "aoss:TagResource",
-                  "aoss:UntagResource",
-                  "aoss:ListTagsForResource"
+                  "s3vectors:CreateVectorBucket",
+                  "s3vectors:DeleteVectorBucket",
+                  "s3vectors:GetVectorBucket",
+                  "s3vectors:ListVectorBuckets",
+                  "s3vectors:CreateIndex",
+                  "s3vectors:DeleteIndex",
+                  "s3vectors:GetIndex",
+                  "s3vectors:ListIndexes",
+                  "s3vectors:PutVectors",
+                  "s3vectors:GetVectors",
+                  "s3vectors:DeleteVectors",
+                  "s3vectors:QueryVectors",
+                  "s3vectors:ListVectors",
+                  "s3vectors:TagResource",
+                  "s3vectors:UntagResource",
+                  "s3vectors:ListTagsForResource"
               ],
               "Resource": "*"
           }
@@ -713,7 +710,7 @@ echo "What was deployed:"
 echo "   - CDK backend infrastructure via CodeBuild"
 echo "   - WebSocket API Gateway with Lambda functions"
 echo "   - Bedrock Knowledge Base with Web Crawler"
-echo "   - OpenSearch Serverless Vector Store"
+echo "   - S3 Vectors Vector Store"
 echo "   - DynamoDB tables for conversations and escalations"
 echo "   - Bedrock Guardrails for content filtering"
 echo "   - Admin HTTP API for escalation management"
