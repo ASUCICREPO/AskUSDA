@@ -55,8 +55,8 @@ The **AskUSDA-WebSocketHandler** Lambda (`lambda/websocket-handler/index.js`) im
 - **sendMessage**:  
   - Validates and filters input via **Bedrock Guardrail**  
   - Sends typing indicator  
-  - Calls **Bedrock Knowledge Base** (**RetrieveAndGenerate**) for RAG and streaming reply (Nova Pro)  
-  - Streams full response and citations to the client over WebSocket (no per-chunk streaming; single message)  
+  - Calls **Bedrock Knowledge Base** (`RetrieveCommand`) for context, then **Bedrock** (`ConverseStreamCommand`) with Nova Pro for streaming generation  
+  - Streams response chunks over WebSocket in buffered batches (~150ms intervals), followed by a final message with citations  
   - Returns `conversationId` and session data; conversation is **not** saved until feedback is submitted
 - **submitFeedback**: Saves the conversation (question, answer, citations, feedback) to **Conversation History** keyed by `conversationId` and `timestamp`; feedback values are `pos` or `neg`
 - **submitEscalation**: Writes escalation request (name, email, phone, question) to **Escalation Requests** table
@@ -71,28 +71,24 @@ The **AskUSDA-WebSocketHandler** Lambda (`lambda/websocket-handler/index.js`) im
 - **Optional Guardrail**: Content filtering on input and output; fail-open on errors
 - Returns **citations** (source URLs) that the frontend renders with markdown
 
-### 5. OpenSearch Serverless
+### 5. S3 Vectors
 
-**Amazon OpenSearch Serverless** is the vector store:
+**Amazon S3 Vectors** is the vector store:
 
-- **Vector collection**: `askusda-vectors`  
-- **Index**: `askusda-index` with `vector` field, L2 distance, 1024-d vectors
-- Mappings include `AMAZON_BEDROCK_TEXT_CHUNK` and `AMAZON_BEDROCK_METADATA` for Knowledge Base compatibility
-- Scales automatically; no cluster management
+- **Vector bucket**: `askusda-vectors`  
+- **Index**: `askusda-kb-index` with 1024-dimensional vectors (Titan Embed v2)
+- Non-filterable metadata keys include `AMAZON_BEDROCK_TEXT` to accommodate chunk content beyond the 2KB filterable limit
+- Fully managed; no cluster or scaling configuration required
 
 ### 6. Data Sources (Knowledge Base)
 
-The Knowledge Base is populated via three **web crawler** data sources:
+The Knowledge Base is populated via an **S3 data source** (`crawler-s3-v3`):
 
-- **usdagov**: Crawls `https://www.usda.gov/trade-and-markets/`, `.../about-food/`, `.../farming-and-ranching/`, `.../forestry/` with inclusion filters
-- **usdagov2**: Crawls `https://www.usda.gov/sustainability/`, `.../about/` with inclusion filters
-- **farmersgov**: Crawls `https://www.farmers.gov/` (full site)
-
-All three use:
-- **Scope**: `HOST_ONLY`; configurable rate limit (200–300 pages/min)
-- **Parsing**: Bedrock Foundation Model (Claude 3 Haiku) for document parsing
-- Content is parsed, embedded with Titan, and stored in OpenSearch Serverless
-- Sync can be triggered manually or via EventBridge (daily at 6:00 AM UTC via `AskUSDA-DailyKBSync` rule, which triggers a Lambda that starts ingestion jobs for all 3 data sources)
+- An external **ECS Fargate web crawler** (managed by the `KBSyncHandler` Lambda) crawls USDA.gov and farmers.gov content
+- Crawled content is stored in S3 (`ingestion-v3/` prefix) with `.metadata.json` sidecar files
+- The Knowledge Base ingests from S3, chunking with **fixed-size** strategy (200 tokens, 15% overlap)
+- Content is parsed, embedded with Titan Embed v2, and stored in S3 Vectors
+- Sync can be triggered manually via the Bedrock console, the `KBSyncHandler` Lambda, or via EventBridge (daily at 6:00 AM UTC)
 
 ### 7. Admin Flow
 
@@ -147,15 +143,16 @@ Two DynamoDB tables store application data:
 ### Backend Infrastructure
 
 - **AWS CDK**: Infrastructure as Code (TypeScript)
-  - Single stack defines DynamoDB, OpenSearch, Bedrock KB, Lambdas, API Gateways, Amplify app
+  - Single stack defines DynamoDB, S3 Vectors, Bedrock KB, Lambdas, API Gateways, Amplify app
 
 - **Amazon API Gateway**:
   - **WebSocket API** for chat and feedback
   - **HTTP API** for admin (CORS enabled, Cognito JWT authorizer on GET and DELETE routes)
 
 - **AWS Lambda** (Node.js 20.x):
-  - **AskUSDA-WebSocketHandler** (`lambda/websocket-handler/index.js`): WebSocket routes (sendMessage, submitFeedback, submitEscalation), Knowledge Base RetrieveAndGenerate, guardrails, DynamoDB
+  - **AskUSDA-WebSocketHandler** (`lambda/websocket-handler/index.js`): WebSocket routes (sendMessage, submitFeedback, submitEscalation), Knowledge Base Retrieve + ConverseStream, guardrails, DynamoDB
   - **AskUSDA-AdminHandler** (`lambda/admin-api/index.js`): HTTP handlers for metrics, feedback, escalations
+  - **AskUSDA-KBSyncHandler** (`lambda/kb-sync-handler/index.js`): Orchestrates ECS Fargate web crawler and triggers KB ingestion
 
 ### AI/ML Services
 
@@ -165,7 +162,7 @@ Two DynamoDB tables store application data:
   - **Titan Embed Text v2** for embeddings
   - **Guardrail** (`AskUSDA-Guardrail`) for content filtering
 
-- **Amazon OpenSearch Serverless**: Vector store (see above)
+- **Amazon S3 Vectors**: Vector store for Knowledge Base embeddings
 
 ### Data Storage
 
@@ -176,7 +173,7 @@ Two DynamoDB tables store application data:
 
 ### Security & Authentication
 
-- **IAM**: Least-privilege roles for Lambdas (DynamoDB, Bedrock, Knowledge Base, OpenSearch, Execute API)
+- **IAM**: Least-privilege roles for Lambdas (DynamoDB, Bedrock, Knowledge Base, S3 Vectors, Execute API)
 - **Cognito**: Admin User Pool (`AskUSDA-AdminPool`) with JWT authorizer on GET /metrics, GET /feedback, GET /escalations, DELETE /escalations/{id}, DELETE /feedback/{id}. POST /feedback and POST /escalations are public.
 - **Secrets Manager**: Used for Amplify GitHub token (`usda-token`), not for app runtime secrets.
 
@@ -198,8 +195,11 @@ backend/
 │   ├── websocket-handler/
 │   │   ├── index.js            # WebSocket handler (chat, feedback, escalation)
 │   │   └── package.json
-│   └── admin-api/
-│       ├── index.js            # Admin HTTP API handler
+│   ├── admin-api/
+│   │   ├── index.js            # Admin HTTP API handler
+│   │   └── package.json
+│   └── kb-sync-handler/
+│       ├── index.js            # KB sync orchestrator (web crawler + ingestion)
 │       └── package.json
 ├── cdk.json
 ├── package.json
@@ -211,31 +211,28 @@ backend/
 1. **DynamoDB Table** (`aws-cdk-lib/aws-dynamodb`)
    - `ConversationLogs` and `EscalationRequests` with GSIs and TTL
 
-2. **VectorCollection** (`@cdklabs/generative-ai-cdk-constructs`)
-   - OpenSearch Serverless collection `askusda-vectors`
+2. **S3 Vectors** (`AWS::S3Vectors::VectorBucket` + `AWS::S3Vectors::Index` via `cdk.CfnResource`)
+   - Vector bucket `askusda-vectors` and index `askusda-kb-index`
 
-3. **VectorIndex** (`@cdklabs/generative-ai-cdk-constructs`)
-   - Index `askusda-index` with vector and metadata mappings
+3. **CfnKnowledgeBase** (`aws-cdk-lib/aws-bedrock`)
+   - Bedrock Knowledge Base with Titan embeddings and S3 Vectors storage
 
-4. **CfnKnowledgeBase** (`aws-cdk-lib/aws-bedrock`)
-   - Bedrock Knowledge Base with Titan embeddings and OpenSearch storage
+4. **CfnDataSource** (`aws-cdk-lib/aws-bedrock`)
+   - S3 data source (`crawler-s3-v3`) pointing to the web crawler output bucket (`ingestion-v3/` prefix)
 
-5. **CfnDataSource** (`aws-cdk-lib/aws-bedrock`)
-   - Three web crawler data sources: `usdagov` (trade, food, farming, forestry), `usdagov2` (sustainability, about), `farmersgov` (full site)
-
-6. **CfnGuardrail** (`aws-cdk-lib/aws-bedrock`)
+5. **CfnGuardrail** (`aws-cdk-lib/aws-bedrock`)
    - Content filters for input/output
 
-7. **WebSocketApi** / **WebSocketStage** (`aws-cdk-lib/aws-apigatewayv2`)
+6. **WebSocketApi** / **WebSocketStage** (`aws-cdk-lib/aws-apigatewayv2`)
    - WebSocket API with connect, disconnect, sendMessage, submitFeedback, submitEscalation routes
 
-8. **HttpApi** (`aws-cdk-lib/aws-apigatewayv2`)
+7. **HttpApi** (`aws-cdk-lib/aws-apigatewayv2`)
    - Admin HTTP API with /metrics, /feedback, /escalations, /escalations/{id}, /feedback/{id}; JWT authorizer on GET/DELETE
 
-9. **Function** (`aws-cdk-lib/aws-lambda`)
-   - WebSocket and Admin Lambdas pointing at `lambda/websocket-handler` and `lambda/admin-api`
+8. **Function** (`aws-cdk-lib/aws-lambda`)
+   - WebSocket, Admin, and KBSync Lambdas pointing at `lambda/websocket-handler`, `lambda/admin-api`, and `lambda/kb-sync-handler`
 
-10. **CfnApp** / **CfnBranch** (`aws-cdk-lib/aws-amplify`)
+9. **CfnApp** / **CfnBranch** (`aws-cdk-lib/aws-amplify`)
     - Amplify app and branch with build spec and env vars
 
 ### Deployment Automation
@@ -254,18 +251,18 @@ backend/
 
 ### Authorization
 
-- **IAM**: Lambda roles scoped to required services (DynamoDB, Bedrock, OpenSearch, API Gateway).
+- **IAM**: Lambda roles scoped to required services (DynamoDB, Bedrock, S3 Vectors, API Gateway).
 - **API Gateway**: No authorizers; WebSocket and Admin APIs are publicly reachable.
 
 ### Data Encryption
 
-- **At rest**: DynamoDB and OpenSearch Serverless use default encryption.
+- **At rest**: DynamoDB and S3 Vectors use default encryption.
 - **In transit**: HTTPS/WSS for all client traffic.
 
 ### Network Security
 
 - **CORS**: Admin API allows configured origins.
-- **OpenSearch Serverless**: Data plane access via IAM; no VPC required for this setup.
+- **S3 Vectors**: Data plane access via IAM; no VPC required.
 
 ### Data Privacy
 
@@ -280,7 +277,7 @@ backend/
 
 - **Lambda**: Concurrency scales automatically with demand.
 - **DynamoDB**: Pay-per-request; no provisioned capacity.
-- **OpenSearch Serverless**: Managed scaling.
+- **S3 Vectors**: Fully managed; no scaling configuration needed.
 - **API Gateway**: Managed scaling for WebSocket and HTTP APIs.
 
 ### Performance Optimizations
@@ -293,7 +290,7 @@ backend/
 
 - **Serverless**: Pay for actual usage.
 - **DynamoDB on-demand**: No provisioned RCU/WCU.
-- **OpenSearch Serverless**: No cluster management; standby replicas disabled in stack.
+- **S3 Vectors**: No cluster management; pay-per-query pricing.
 
 ---
 
@@ -306,11 +303,13 @@ User → Amplify (Frontend) → WebSocket API → WebSocket Handler Lambda
                                                       ↓
                                               Guardrail (input)
                                                       ↓
-                                              Bedrock Knowledge Base (RetrieveAndGenerate)
+                                              Bedrock Knowledge Base (Retrieve)
                                                       ↓
-                                              OpenSearch Serverless (vector search) + Nova Pro
+                                              S3 Vectors (vector search) + ConverseStream (Nova Pro)
                                                       ↓
-                                              sendMessage response (answer, citations, conversationId) → User
+                                              Streaming response chunks → User
+                                                      ↓
+                                              Final message (answer, citations, conversationId) → User
                                                       ↓
                                               (Conversation saved to DynamoDB only when user submits feedback via submitFeedback)
 ```
@@ -340,13 +339,13 @@ Admin → Amplify (/admin) → HTTP API (GET /metrics, /feedback, /escalations)
 ### Knowledge Ingestion Flow
 
 ```
-Web Crawler Data Source (usda.gov, farmers.gov)
+Web Crawler (ECS Fargate) → S3 (ingestion-v3/)
                     ↓
          Bedrock Data Source ingest
                     ↓
-         Chunking + Titan Embeddings
+         Fixed-size Chunking (200 tokens) + Titan Embeddings
                     ↓
-         OpenSearch Serverless (vector index)
+         S3 Vectors (vector index)
 ```
 
 ---

@@ -42,7 +42,7 @@ Your AWS user or role must be able to create and manage:
 - API Gateway (REST and WebSocket)  
 - DynamoDB  
 - Bedrock (Knowledge Bases, foundation models)  
-- OpenSearch Serverless  
+- S3 Vectors  
 - Cognito  
 - Amplify  
 - CodeBuild (when using `deploy.sh`)  
@@ -189,8 +189,8 @@ When prompted, review IAM and resource changes, then type `y` to confirm.
 The stack `AskUSDA-Backend` deploys:
 
 - DynamoDB (Conversation History, Escalation Requests)  
-- OpenSearch Serverless (vector store)  
-- Bedrock Knowledge Base (three web crawler data sources for usda.gov and farmers.gov)  
+- S3 Vectors (vector store)  
+- Bedrock Knowledge Base (S3 data source for USDA web crawler output)  
 - Lambda (WebSocket handler, Admin API)  
 - API Gateway (WebSocket + HTTP Admin API)  
 - Cognito User Pool for admin authentication  
@@ -278,10 +278,8 @@ After a successful backend deployment, you can read these CloudFormation outputs
 | `ConversationTableName` | DynamoDB Conversation History table |
 | `EscalationTableName` | DynamoDB Escalation Requests table |
 | `KnowledgeBaseId` | Bedrock Knowledge Base ID |
-| `UsdaGovDataSourceId` | Bedrock data source ID for usda.gov (trade, food, farming, forestry) |
-| `UsdaGov2DataSourceId` | Bedrock data source ID for usda.gov (sustainability, about) |
-| `FarmersGovDataSourceId` | Bedrock data source ID for farmers.gov |
-| `OpenSearchCollectionEndpoint` | OpenSearch Serverless collection endpoint |
+| `S3DataSourceV3Id` | Bedrock S3 data source ID |
+| `S3VectorBucketArn` | S3 Vectors bucket ARN |
 | `GuardrailId` | Bedrock Guardrail ID |
 | `AdminUserPoolId` | Cognito User Pool ID for admin |
 | `AdminUserPoolClientId` | Cognito App Client ID |
@@ -300,7 +298,7 @@ When using `deploy.sh`, the **frontend** URL is printed in the Deployment Summar
 
 - Open **CodeBuild → Build projects → your project → Build history → failed build** and check the logs.  
 - Confirm the GitHub repo is accessible (public or correctly connected).  
-- Ensure Bedrock and OpenSearch Serverless are available in your region and that your IAM role has the required permissions.
+- Ensure Bedrock and S3 Vectors are available in your region and that your IAM role has the required permissions.
 
 ### CDK Bootstrap Error
 
@@ -321,7 +319,7 @@ Use your account ID and region (e.g. `us-east-1`).
 **What to do**:
 
 - Run `aws sts get-caller-identity` and confirm the correct account.  
-- Ensure your IAM user/role has permissions for CloudFormation, Lambda, API Gateway, DynamoDB, Bedrock, OpenSearch Serverless, Cognito, Amplify, CodeBuild, IAM, etc.  
+- Ensure your IAM user/role has permissions for CloudFormation, Lambda, API Gateway, DynamoDB, Bedrock, S3 Vectors, Cognito, Amplify, CodeBuild, IAM, etc.  
 - Confirm you are deploying in the intended region (`aws configure get region`).
 
 ### Knowledge Base Not Responding
@@ -330,9 +328,9 @@ Use your account ID and region (e.g. `us-east-1`).
 
 **What to do**:
 
-1. In **Bedrock → Knowledge bases**, confirm the Knowledge Base exists and the web crawler data source has been **synced** (status **Available**).  
-2. Check the WebSocket Lambda’s **CloudWatch** logs for Bedrock or OpenSearch errors.  
-3. Verify the Lambda execution role has `bedrock:Retrieve`, `bedrock:RetrieveAndGenerate`, and access to the OpenSearch Serverless collection.
+1. In **Bedrock → Knowledge bases**, confirm the Knowledge Base exists and the data source has been **synced** (status **Available**).  
+2. Check the WebSocket Lambda's **CloudWatch** logs for Bedrock or S3 Vectors errors.  
+3. Verify the Lambda execution role has `bedrock:Retrieve`, `bedrock-runtime:ConverseStream`, and `s3vectors:*` permissions.
 
 ### Amplify Build or Upload Failed
 
