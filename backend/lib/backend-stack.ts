@@ -379,7 +379,7 @@ export class USDAChatbotStack extends cdk.Stack {
       webSocketApi,
       stageName: 'prod',
       autoDeploy: true,
-      throttle: { rateLimit: 10, burstLimit: 20 },
+      throttle: { rateLimit: 50, burstLimit: 100 },
     });
 
     webSocketHandler.addEnvironment('WEBSOCKET_ENDPOINT', webSocketStage.callbackUrl);
