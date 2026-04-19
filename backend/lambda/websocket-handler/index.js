@@ -1,41 +1,116 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { BedrockAgentRuntimeClient, RetrieveAndGenerateCommand } = require('@aws-sdk/client-bedrock-agent-runtime');
-const { BedrockRuntimeClient, ApplyGuardrailCommand } = require('@aws-sdk/client-bedrock-runtime');
+const {
+  BedrockAgentRuntimeClient,
+  RetrieveCommand,
+} = require('@aws-sdk/client-bedrock-agent-runtime');
+const {
+  BedrockRuntimeClient,
+  ApplyGuardrailCommand,
+  ConverseStreamCommand,
+} = require('@aws-sdk/client-bedrock-runtime');
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { v4: uuidv4 } = require('uuid');
 
-// Initialize clients
+// Initialize clients once per cold start
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-const bedrockAgentClient = new BedrockAgentRuntimeClient({});
-const bedrockRuntimeClient = new BedrockRuntimeClient({});
+const bedrockAgent = new BedrockAgentRuntimeClient({});
+const bedrockRuntime = new BedrockRuntimeClient({});
 const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
-// Environment variables
-const KNOWLEDGE_BASE_ID = process.env.KNOWLEDGE_BASE_ID;
-const CONVERSATION_TABLE = process.env.CONVERSATION_TABLE;
-const ESCALATION_TABLE = process.env.ESCALATION_TABLE;
-const GUARDRAIL_ID = process.env.GUARDRAIL_ID;
-const GUARDRAIL_VERSION = process.env.GUARDRAIL_VERSION || 'DRAFT';
-const WEBSOCKET_ENDPOINT = process.env.WEBSOCKET_ENDPOINT;
-const CRAWLER_BUCKET = process.env.CRAWLER_BUCKET;
+const {
+  CONVERSATION_TABLE,
+  ESCALATION_TABLE,
+  KNOWLEDGE_BASE_ID,
+  BEDROCK_MODEL_ID,
+  WEBSOCKET_ENDPOINT,
+  GUARDRAIL_ID,
+  GUARDRAIL_VERSION = 'DRAFT',
+  CRAWLER_BUCKET,
+  AWS_REGION,
+  AWS_ACCOUNT_ID,
+} = process.env;
 
-// Resolve a real website URL from an S3 URI by reading the crawler metadata file.
-// Works for all content types: markdown, pdfs, and docs.
-// Ingestion path: s3://bucket/ingestion/{type}/{filename}
-// Crawler metadata paths:
-//   jobs/{id}/all/metadata/{hash}.md.metadata.json  (for markdown)
-//   jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json (for pdfs)
-//   jobs/{id}/docs/metadata/{name}.xlsx.metadata.json (for docs)
+const SYSTEM_PROMPT = `You are AskUSDA, an official AI assistant for the United States Department of Agriculture, designed to serve farmers, ranchers, and the general public.
+
+PURPOSE:
+Your core mission is to reduce friction in navigating USDA services by answering inquiries strictly using indexed data from usda.gov and farmers.gov (including HTML pages and PDF documents).
+
+STRICT SOURCING RULES:
+- Every claim MUST be backed by a direct citation/link to the source material from the provided context
+- If information is NOT in the knowledge base context provided, clearly state: "I don't have specific information about that in my knowledge base. Please visit usda.gov or contact your local USDA Service Center for assistance."
+- NEVER fabricate, guess, or hallucinate information - accuracy is paramount over conversation flow
+- When citing sources, include the specific URL when available
+
+ACTION-ORIENTED RESPONSES:
+- Direct users to the specific next step (e.g., "Apply here: [link]", "Visit this program page: [link]")
+- Minimize clicks by providing direct paths to resources
+- Include relevant phone numbers, office locations, or application links when available
+
+CONFIDENCE HANDLING:
+- HIGH CONFIDENCE: Provide the answer with source citations
+- LOW CONFIDENCE: Respond with: "I'm not certain about this specific question. To ensure you get accurate information, I recommend contacting the USDA directly at 1-800-727-9540 or visiting ask.usda.gov to submit your question to a specialist."
+
+SCOPE BOUNDARIES:
+- Operate in English only
+- Do not interpret audio/video content
+- Do not attempt to access private internal systems or personal account information
+- Focus only on publicly available USDA information
+
+TOPICS YOU CAN HELP WITH:
+- Agricultural programs and services
+- Food safety and nutrition (FSIS, FDA coordination)
+- Rural development programs and loans
+- Conservation and environmental programs (NRCS, FSA)
+- Farm loans, grants, and disaster assistance
+- SNAP, WIC, and nutrition assistance programs
+- USDA regulations and policies
+- Crop insurance and risk management
+
+RESPONSE FORMAT:
+- Be concise but thorough
+- Use bullet points for multiple items or steps
+- Always end with a relevant next action or resource link when applicable`;
+
+// ==================== WebSocket Utilities ====================
+
+let _apiGwClient;
+function getApiGatewayClient() {
+  if (!_apiGwClient) {
+    _apiGwClient = new ApiGatewayManagementApiClient({
+      endpoint: WEBSOCKET_ENDPOINT.replace('wss://', 'https://'),
+    });
+  }
+  return _apiGwClient;
+}
+
+async function sendToClient(connectionId, payload) {
+  try {
+    await getApiGatewayClient().send(new PostToConnectionCommand({
+      ConnectionId: connectionId,
+      Data: JSON.stringify(payload),
+    }));
+    return true;
+  } catch (error) {
+    if (error.statusCode === 410 || error.name === 'GoneException') {
+      console.log(`Connection ${connectionId} is stale`);
+      return false;
+    }
+    console.error('Error sending to client:', error);
+    throw error;
+  }
+}
+
+// ==================== Source URL Resolution ====================
+
 async function resolveSourceUrl(s3Uri) {
   if (!CRAWLER_BUCKET || !s3Uri.includes(CRAWLER_BUCKET)) return s3Uri;
   try {
     const key = s3Uri.replace(`s3://${CRAWLER_BUCKET}/`, '');
 
-    // If the file is in ingestion/, try to read the co-located Bedrock metadata
-    if (key.startsWith('ingestion/')) {
+    if (key.startsWith('ingestion')) {
       const bedrockMetaKey = key + '.metadata.json';
       try {
         const resp = await s3Client.send(new GetObjectCommand({ Bucket: CRAWLER_BUCKET, Key: bedrockMetaKey }));
@@ -47,10 +122,6 @@ async function resolveSourceUrl(s3Uri) {
       } catch {}
     }
 
-    // Fallback: try the original crawler metadata paths under jobs/
-    // For markdown: jobs/{id}/all/markdown/{hash}.md → jobs/{id}/all/metadata/{hash}.md.metadata.json
-    // For pdfs:     jobs/{id}/pdfs/{name}.pdf → jobs/{id}/pdfs/metadata/{name}.pdf.metadata.json
-    // For docs:     jobs/{id}/docs/{name}.xlsx → jobs/{id}/docs/metadata/{name}.xlsx.metadata.json
     let metadataKey;
     if (key.includes('/all/markdown/')) {
       metadataKey = key.replace('/all/markdown/', '/all/metadata/') + '.metadata.json';
@@ -76,35 +147,13 @@ async function resolveSourceUrl(s3Uri) {
   }
 }
 
-// Helper to send message to WebSocket client
-async function sendToClient(connectionId, data) {
-  // The WEBSOCKET_ENDPOINT is the callback URL which already includes the stage
-  // Format: https://{api-id}.execute-api.{region}.amazonaws.com/{stage}
-  const endpoint = WEBSOCKET_ENDPOINT.replace('wss://', 'https://');
-  
-  const apiGatewayClient = new ApiGatewayManagementApiClient({
-    endpoint: endpoint,
-  });
+// ==================== Guardrail ====================
+
+async function applyGuardrail(text) {
+  if (!GUARDRAIL_ID) return { blocked: false };
 
   try {
-    await apiGatewayClient.send(new PostToConnectionCommand({
-      ConnectionId: connectionId,
-      Data: JSON.stringify(data),
-    }));
-  } catch (error) {
-    console.error('Error sending to client:', error);
-    throw error;
-  }
-}
-
-// Apply guardrails to input
-async function applyGuardrails(text) {
-  if (!GUARDRAIL_ID) {
-    return { blocked: false, text };
-  }
-
-  try {
-    const response = await bedrockRuntimeClient.send(new ApplyGuardrailCommand({
+    const response = await bedrockRuntime.send(new ApplyGuardrailCommand({
       guardrailIdentifier: GUARDRAIL_ID,
       guardrailVersion: GUARDRAIL_VERSION,
       source: 'INPUT',
@@ -114,252 +163,229 @@ async function applyGuardrails(text) {
     if (response.action === 'GUARDRAIL_INTERVENED') {
       return {
         blocked: true,
-        message: response.outputs?.[0]?.text || "I'm sorry, but I can't help with that request. Please ask about USDA programs and services.",
+        message: response.outputs?.[0]?.text ||
+          "I'm sorry, but I can't help with that request. Please ask about USDA programs and services.",
       };
     }
-
-    return { blocked: false, text };
+    return { blocked: false };
   } catch (error) {
     console.error('Guardrail error:', error);
-    return { blocked: false, text };
+    return { blocked: false };
   }
 }
 
-// Query Knowledge Base using RetrieveAndGenerate API (matches console behavior)
-async function queryKnowledgeBase(question, sessionId) {
+// ==================== Knowledge Base Retrieval ====================
+
+async function retrieveFromKB(query) {
   const startTime = Date.now();
-  console.log('[PIPELINE] Starting RetrieveAndGenerate for question:', question);
-
-  const modelArn = `arn:aws:bedrock:${process.env.AWS_REGION}:${process.env.AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
-
-  const params = {
-    input: { text: question },
-    retrieveAndGenerateConfiguration: {
-      type: 'KNOWLEDGE_BASE',
-      knowledgeBaseConfiguration: {
-        knowledgeBaseId: KNOWLEDGE_BASE_ID,
-        modelArn: modelArn,
-        retrievalConfiguration: {
-          vectorSearchConfiguration: {
-            numberOfResults: 100,
-            overrideSearchType: 'HYBRID',
-            rerankingConfiguration: {
-              type: 'BEDROCK_RERANKING_MODEL',
-              bedrockRerankingConfiguration: {
-                modelConfiguration: {
-                  modelArn: `arn:aws:bedrock:${process.env.AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
-                },
-              },
+  const response = await bedrockAgent.send(new RetrieveCommand({
+    knowledgeBaseId: KNOWLEDGE_BASE_ID,
+    retrievalQuery: { text: query },
+    retrievalConfiguration: {
+      vectorSearchConfiguration: {
+        numberOfResults: 25,
+        rerankingConfiguration: {
+          type: 'BEDROCK_RERANKING_MODEL',
+          bedrockRerankingConfiguration: {
+            modelConfiguration: {
+              modelArn: `arn:aws:bedrock:${AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
             },
           },
         },
       },
     },
-  };
+  }));
 
-  try {
-    const response = await bedrockAgentClient.send(new RetrieveAndGenerateCommand(params));
-    const responseTimeMs = Date.now() - startTime;
-
-    const answer = response.output?.text || "I couldn't generate a response. Please try again.";
-
-    // Extract citations from the RetrieveAndGenerate response — these are the
-    // exact sources the model used to generate the answer.
-    // Priority: metadata.source_url > webLocation > s3Location (with S3 fallback)
-    const rawCitations = [];
-    const seen = new Set();
-    if (response.citations) {
-      for (const citation of response.citations) {
-        for (const ref of (citation.retrievedReferences || [])) {
-          const metadata = ref.metadata || {};
-          const sourceUrl = metadata.source_url || metadata['source_url'] || '';
-          const webUrl = ref.location?.webLocation?.url || '';
-          const s3Uri = ref.location?.s3Location?.uri || '';
-          const source = sourceUrl || webUrl || s3Uri || '';
-          const title = metadata.title || '';
-
-          if (source && !seen.has(source)) {
-            seen.add(source);
-            rawCitations.push({
-              text: (ref.content?.text || '').substring(0, 200),
-              source,
-              title,
-              needsResolve: !sourceUrl && !webUrl && !!s3Uri,
-            });
-          }
-        }
-      }
-    }
-
-    // Fallback: resolve S3 URIs to real URLs by reading crawler metadata from S3
-    const resolved = await Promise.all(rawCitations.map(async (r) => {
-      if (r.needsResolve) {
-        const realUrl = await resolveSourceUrl(r.source);
-        return { ...r, source: realUrl };
-      }
-      return r;
-    }));
-
-    // Deduplicate after resolution (two S3 URIs might map to the same URL)
-    const citations = [];
-    const finalSeen = new Set();
-    for (const r of resolved) {
-      if (!finalSeen.has(r.source)) {
-        finalSeen.add(r.source);
-        citations.push({
-          id: citations.length + 1,
-          text: r.text,
-          source: r.source,
-          title: r.title,
-          score: 0,
-        });
-      }
-    }
-
-    const maxConfidence = 0;
-
-    console.log('[PIPELINE] Complete:', {
-      question,
-      totalMs: responseTimeMs,
-      answerLength: answer.length,
-      citationCount: citations.length,
-      sessionId: response.sessionId,
-    });
-
-    return {
-      answer,
-      citations,
-      maxConfidence,
-      sessionId: sessionId || uuidv4(),
-      responseTimeMs,
-    };
-  } catch (error) {
-    console.error('[PIPELINE] Error:', {
-      errorName: error.name,
-      errorMessage: error.message,
-      errorCode: error.$metadata?.httpStatusCode,
-    });
-    throw error;
-  }
+  const retrieveMs = Date.now() - startTime;
+  console.log(`[PIPELINE] Retrieve: ${retrieveMs}ms, ${(response.retrievalResults || []).length} results`);
+  return response.retrievalResults || [];
 }
 
-// Save escalation request
+function buildContext(results) {
+  return results
+    .filter(r => (r.score ?? 1) > 0.3)
+    .map((r, i) => `[Source ${i + 1}]: ${r.content?.text || ''}`)
+    .join('\n\n');
+}
+
+async function buildCitations(results) {
+  const seen = new Set();
+  const raw = [];
+
+  for (const ref of results.filter(r => (r.score ?? 1) > 0.5)) {
+    const metadata = ref.metadata || {};
+    const sourceUrl = metadata.source_url || metadata['source_url'] || '';
+    const webUrl = ref.location?.webLocation?.url || '';
+    const s3Uri = ref.location?.s3Location?.uri || '';
+    const source = sourceUrl || webUrl || s3Uri || '';
+    const title = metadata.title || '';
+
+    if (source && !seen.has(source)) {
+      seen.add(source);
+      raw.push({ source, title, text: (ref.content?.text || '').substring(0, 200), needsResolve: !sourceUrl && !webUrl && !!s3Uri });
+    }
+  }
+
+  const resolved = await Promise.all(raw.map(async (r) => {
+    if (r.needsResolve) {
+      return { ...r, source: await resolveSourceUrl(r.source) };
+    }
+    return r;
+  }));
+
+  const finalSeen = new Set();
+  const citations = [];
+  for (const r of resolved) {
+    if (!finalSeen.has(r.source)) {
+      finalSeen.add(r.source);
+      citations.push({ id: citations.length + 1, text: r.text, source: r.source, title: r.title, score: 0 });
+    }
+  }
+  return citations;
+}
+
+// ==================== Streaming Generation ====================
+
+async function streamResponse(connectionId, userMessage, context) {
+  const modelArn = `arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
+
+  let systemPrompt = SYSTEM_PROMPT;
+  if (context) {
+    systemPrompt += `\n\nUse the following information from USDA sources to answer the user's question. If the context doesn't contain relevant information, say so clearly.\n\nContext:\n${context}`;
+  }
+
+  const commandParams = {
+    modelId: modelArn,
+    system: [{ text: systemPrompt }],
+    messages: [{ role: 'user', content: [{ text: userMessage }] }],
+    inferenceConfig: { maxTokens: 1024, temperature: 0.3, topP: 0.9 },
+  };
+
+  if (GUARDRAIL_ID && GUARDRAIL_VERSION) {
+    commandParams.guardrailConfig = {
+      guardrailIdentifier: GUARDRAIL_ID,
+      guardrailVersion: GUARDRAIL_VERSION,
+    };
+  }
+
+  const response = await bedrockRuntime.send(new ConverseStreamCommand(commandParams));
+
+  let fullResponse = '';
+  let blocked = false;
+
+  for await (const event of response.stream) {
+    if (event.contentBlockDelta?.delta?.text) {
+      const chunk = event.contentBlockDelta.delta.text;
+      fullResponse += chunk;
+      await sendToClient(connectionId, { type: 'stream', chunk, isComplete: false });
+    }
+    if (event.messageStop?.stopReason === 'guardrail_intervened') {
+      blocked = true;
+    }
+    if (event.metadata?.usage) {
+      console.log('Token usage:', event.metadata.usage);
+    }
+  }
+
+  await sendToClient(connectionId, { type: 'stream', chunk: '', isComplete: true });
+  return { text: fullResponse, blocked };
+}
+
+// ==================== Escalation ====================
+
 async function saveEscalation(name, email, phone, question, sessionId) {
   const escalationId = uuidv4();
   const now = new Date();
   const timestamp = now.toISOString();
-  const date = timestamp.split('T')[0]; // For GSI
-  const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60); // 1 year TTL
+  const date = timestamp.split('T')[0];
+  const ttl = Math.floor(now.getTime() / 1000) + (365 * 24 * 60 * 60);
 
   await docClient.send(new PutCommand({
     TableName: ESCALATION_TABLE,
-    Item: {
-      escalationId,
-      timestamp,
-      date,
-      name,
-      email,
-      phone: phone || '',
-      question,
-      sessionId: sessionId || '',
-      status: 'pending',
-      ttl,
-    },
+    Item: { escalationId, timestamp, date, name, email, phone: phone || '', question, sessionId: sessionId || '', status: 'pending', ttl },
   }));
-
   return escalationId;
 }
 
-// Handle sendMessage action
+// ==================== Route Handlers ====================
+
 async function handleSendMessage(connectionId, body) {
   const { message, sessionId } = body;
 
-  if (!message) {
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: 'Message is required',
-    });
+  if (!message || typeof message !== 'string' || !message.trim()) {
+    await sendToClient(connectionId, { type: 'error', message: 'Message is required' });
     return;
   }
 
-  // Send typing indicator
+  const userMessage = message.trim();
+  const startTime = Date.now();
+  console.log(`[PIPELINE] Start: "${userMessage.substring(0, 60)}..."`);
+
   await sendToClient(connectionId, { type: 'typing', isTyping: true });
 
   try {
-    // Apply guardrails
-    const guardrailResult = await applyGuardrails(message);
-    
+    const guardrailResult = await applyGuardrail(userMessage);
     if (guardrailResult.blocked) {
-      await sendToClient(connectionId, {
-        type: 'message',
-        message: guardrailResult.message,
-        blocked: true,
-      });
+      await sendToClient(connectionId, { type: 'message', message: guardrailResult.message, blocked: true });
+      await sendToClient(connectionId, { type: 'typing', isTyping: false });
       return;
     }
 
-    // Query Knowledge Base (two-step: retrieve + generate)
-    const result = await queryKnowledgeBase(message, sessionId);
-    
-    // Generate conversation ID (but don't save yet - only save when feedback is given)
-    const conversationId = uuidv4();
+    // Retrieve from KB (this is fast — ~1-2s)
+    const retrievalResults = await retrieveFromKB(userMessage);
+    const context = buildContext(retrievalResults);
 
+    // Build citations in parallel with the stream start
+    const citationsPromise = buildCitations(retrievalResults);
+
+    // Stream the response — user sees text appearing immediately
+    const { text: responseText, blocked } = await streamResponse(connectionId, userMessage, context);
+
+    const citations = await citationsPromise;
+    const conversationId = uuidv4();
+    const responseTimeMs = Date.now() - startTime;
+
+    // Send final message with citations and metadata
     await sendToClient(connectionId, {
       type: 'message',
-      message: result.answer,
-      citations: result.citations,
+      message: responseText,
+      citations,
       conversationId,
-      sessionId: result.sessionId,
-      responseTimeMs: result.responseTimeMs,
-      question: message,
-      maxConfidence: result.maxConfidence,
+      sessionId: sessionId || conversationId,
+      responseTimeMs,
+      question: userMessage,
+      blocked,
     });
 
+    console.log(`[PIPELINE] Complete: ${responseTimeMs}ms, ${responseText.length} chars, ${citations.length} citations`);
   } catch (error) {
-    console.error('Error processing message:', error);
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
-    console.error('Knowledge Base ID:', KNOWLEDGE_BASE_ID);
-    console.error('AWS Region:', process.env.AWS_REGION);
-    
-    // Provide more specific error messages based on error type
+    console.error('[PIPELINE] Error:', { name: error.name, message: error.message, code: error.$metadata?.httpStatusCode });
+
     let errorMessage = 'An error occurred while processing your request. Please try again.';
-    if (error.name === 'AccessDeniedException') {
-      errorMessage = 'Access denied. Please check model access permissions.';
-    } else if (error.name === 'ResourceNotFoundException') {
-      errorMessage = 'Knowledge base not found. Please verify configuration.';
-    } else if (error.name === 'ValidationException') {
-      errorMessage = 'Invalid request. ' + (error.message || '');
-    } else if (error.name === 'ThrottlingException') {
-      errorMessage = 'Service is busy. Please try again in a moment.';
-    }
-    
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: errorMessage,
-    });
+    if (error.name === 'AccessDeniedException') errorMessage = 'Access denied. Please check model access permissions.';
+    else if (error.name === 'ResourceNotFoundException') errorMessage = 'Knowledge base not found. Please verify configuration.';
+    else if (error.name === 'ValidationException') errorMessage = 'Invalid request. ' + (error.message || '');
+    else if (error.name === 'ThrottlingException') errorMessage = 'Service is busy. Please try again in a moment.';
+
+    await sendToClient(connectionId, { type: 'error', message: errorMessage });
+  } finally {
+    await sendToClient(connectionId, { type: 'typing', isTyping: false });
   }
 }
 
-// Handle submitFeedback action - saves conversation only when feedback is given
 async function handleSubmitFeedback(connectionId, body) {
   const { conversationId, feedback, question, answer, sessionId, responseTimeMs, citations } = body;
 
   if (!conversationId || !feedback) {
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: 'conversationId and feedback are required',
-    });
+    await sendToClient(connectionId, { type: 'error', message: 'conversationId and feedback are required' });
     return;
   }
 
   try {
-    // Save the conversation with feedback (only conversations with feedback are stored)
     const now = new Date();
     const timestamp = now.toISOString();
     const date = timestamp.split('T')[0];
-    const ttl = Math.floor(now.getTime() / 1000) + (90 * 24 * 60 * 60); // 90 days TTL
+    const ttl = Math.floor(now.getTime() / 1000) + (90 * 24 * 60 * 60);
 
     await docClient.send(new PutCommand({
       TableName: CONVERSATION_TABLE,
@@ -378,37 +404,24 @@ async function handleSubmitFeedback(connectionId, body) {
         ttl,
       },
     }));
-    
-    await sendToClient(connectionId, {
-      type: 'feedbackConfirmation',
-      success: true,
-      conversationId,
-      feedback,
-    });
+
+    await sendToClient(connectionId, { type: 'feedbackConfirmation', success: true, conversationId, feedback });
   } catch (error) {
     console.error('Error saving feedback:', error);
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: 'Failed to save feedback',
-    });
+    await sendToClient(connectionId, { type: 'error', message: 'Failed to save feedback' });
   }
 }
 
-// Handle submitEscalation action
 async function handleSubmitEscalation(connectionId, body) {
   const { name, email, phone, question, sessionId } = body;
 
   if (!name || !email || !question) {
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: 'Name, email, and question are required',
-    });
+    await sendToClient(connectionId, { type: 'error', message: 'Name, email, and question are required' });
     return;
   }
 
   try {
     const escalationId = await saveEscalation(name, email, phone, question, sessionId);
-    
     await sendToClient(connectionId, {
       type: 'escalationConfirmation',
       success: true,
@@ -417,17 +430,17 @@ async function handleSubmitEscalation(connectionId, body) {
     });
   } catch (error) {
     console.error('Error saving escalation:', error);
-    await sendToClient(connectionId, {
-      type: 'error',
-      message: 'Failed to submit support request',
-    });
+    await sendToClient(connectionId, { type: 'error', message: 'Failed to submit support request' });
   }
 }
 
-// Main handler
+// ==================== Main Handler ====================
+
 exports.handler = async (event) => {
   const { requestContext, body } = event;
   const { connectionId, routeKey } = requestContext;
+
+  console.log(`[${routeKey}] Connection: ${connectionId}`);
 
   try {
     switch (routeKey) {
@@ -450,29 +463,23 @@ exports.handler = async (event) => {
         break;
 
       case '$default':
-      default:
-        // Try to parse the body and route based on action
+      default: {
         const parsedBody = JSON.parse(body || '{}');
         const action = parsedBody.action;
-
-        if (action === 'sendMessage') {
-          await handleSendMessage(connectionId, parsedBody);
-        } else if (action === 'submitFeedback') {
-          await handleSubmitFeedback(connectionId, parsedBody);
-        } else if (action === 'submitEscalation') {
-          await handleSubmitEscalation(connectionId, parsedBody);
-        } else {
-          await sendToClient(connectionId, {
-            type: 'error',
-            message: `Unknown action: ${action || routeKey}`,
-          });
-        }
+        if (action === 'sendMessage') await handleSendMessage(connectionId, parsedBody);
+        else if (action === 'submitFeedback') await handleSubmitFeedback(connectionId, parsedBody);
+        else if (action === 'submitEscalation') await handleSubmitEscalation(connectionId, parsedBody);
+        else await sendToClient(connectionId, { type: 'error', message: `Unknown action: ${action || routeKey}` });
         break;
+      }
     }
 
     return { statusCode: 200, body: 'OK' };
   } catch (error) {
-    console.error('Handler error:', error);
+    console.error(`Unhandled error in ${routeKey}:`, error);
+    try {
+      await sendToClient(connectionId, { type: 'typing', isTyping: false });
+    } catch {}
     return { statusCode: 500, body: 'Internal Server Error' };
   }
 };

@@ -9,7 +9,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import { opensearchserverless, opensearch_vectorindex } from '@cdklabs/generative-ai-cdk-constructs';
 
 export class USDAChatbotStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -73,28 +72,6 @@ export class USDAChatbotStack extends cdk.Stack {
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
     });
 
-    // ==================== OpenSearch Serverless Vector Collection ====================
-    const vectorCollection = new opensearchserverless.VectorCollection(this, 'VectorCollection', {
-      collectionName: 'askusda-vectors',
-      description: 'Vector store for AskUSDA Knowledge Base',
-      standbyReplicas: opensearchserverless.VectorCollectionStandbyReplicas.DISABLED,
-    });
-
-    const vectorIndex = new opensearch_vectorindex.VectorIndex(this, 'VectorIndex', {
-      collection: vectorCollection,
-      indexName: 'askusda-index',
-      vectorDimensions: 1024,
-      vectorField: 'vector',
-      precision: 'float',
-      distanceType: 'l2',
-      mappings: [
-        { mappingField: 'text', dataType: 'text', filterable: true },
-        { mappingField: 'metadata', dataType: 'text', filterable: false },
-        { mappingField: 'AMAZON_BEDROCK_TEXT_CHUNK', dataType: 'text', filterable: true },
-        { mappingField: 'AMAZON_BEDROCK_METADATA', dataType: 'text', filterable: false },
-      ],
-    });
-
     // ==================== IAM Role for Bedrock Knowledge Base ====================
     const knowledgeBaseRole = new iam.Role(this, 'KnowledgeBaseRole', {
       assumedBy: new iam.ServicePrincipal('bedrock.amazonaws.com'),
@@ -106,7 +83,6 @@ export class USDAChatbotStack extends cdk.Stack {
       actions: ['bedrock:InvokeModel'],
       resources: [
         `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
-        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
       ],
     }));
 
@@ -114,14 +90,6 @@ export class USDAChatbotStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:ListFoundationModels', 'bedrock:GetFoundationModel'],
       resources: ['*'],
-    }));
-
-    vectorCollection.grantDataAccess(knowledgeBaseRole);
-
-    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['aoss:APIAccessAll'],
-      resources: [vectorCollection.collectionArn],
     }));
 
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
@@ -136,10 +104,23 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
     }));
 
+    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        's3vectors:CreateIndex',
+        's3vectors:GetIndex',
+        's3vectors:PutVectors',
+        's3vectors:GetVectors',
+        's3vectors:DeleteVectors',
+        's3vectors:QueryVectors',
+        's3vectors:ListVectors',
+      ],
+      resources: ['*'],
+    }));
+
     // ==================== S3 Bucket Reference (Web Crawler Output) ====================
     const crawlerBucket = s3.Bucket.fromBucketName(this, 'CrawlerDataBucket', crawlerBucketName);
 
-    // Grant KB role read access to the crawler bucket
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['s3:GetObject', 's3:ListBucket'],
@@ -149,32 +130,56 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     }));
 
-    // ==================== Bedrock Knowledge Base ====================
-    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'USDAKnowledgeBase', {
-      name: 'AskUSDA-KnowledgeBase',
-      description: 'Knowledge base for USDA information using web crawler S3 data',
+    // ==================== S3 Vectors — Vector Bucket ====================
+    const s3VectorBucket = new cdk.CfnResource(this, 'S3VectorBucket', {
+      type: 'AWS::S3Vectors::VectorBucket',
+      properties: {
+        VectorBucketName: 'askusda-vectors',
+      },
+    });
+
+    // ==================== S3 Vectors — Vector Index ====================
+    const s3VectorIndex = new cdk.CfnResource(this, 'S3VectorIndex', {
+      type: 'AWS::S3Vectors::Index',
+      properties: {
+        VectorBucketName: 'askusda-vectors',
+        IndexName: 'askusda-kb-index',
+        DataType: 'float32',
+        Dimension: 1024,
+        DistanceMetric: 'cosine',
+        MetadataConfiguration: {
+          NonFilterableMetadataKeys: ['AMAZON_BEDROCK_TEXT'],
+        },
+      },
+    });
+    s3VectorIndex.addDependency(s3VectorBucket);
+
+    // ==================== S3 Vectors — Knowledge Base ====================
+    const knowledgeBase = new bedrock.CfnKnowledgeBase(this, 'USDAKnowledgeBaseS3V', {
+      name: 'AskUSDA-KB',
+      description: 'Knowledge base for USDA information using S3 Vectors store',
       roleArn: knowledgeBaseRole.roleArn,
       knowledgeBaseConfiguration: {
         type: 'VECTOR',
         vectorKnowledgeBaseConfiguration: {
           embeddingModelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
-        },
-      },
-      storageConfiguration: {
-        type: 'OPENSEARCH_SERVERLESS',
-        opensearchServerlessConfiguration: {
-          collectionArn: vectorCollection.collectionArn,
-          vectorIndexName: vectorIndex.indexName,
-          fieldMapping: {
-            vectorField: vectorIndex.vectorField,
-            textField: 'AMAZON_BEDROCK_TEXT_CHUNK',
-            metadataField: 'AMAZON_BEDROCK_METADATA',
+          embeddingModelConfiguration: {
+            bedrockEmbeddingModelConfiguration: {
+              dimensions: 1024,
+              embeddingDataType: 'FLOAT32',
+            },
           },
         },
       },
+      storageConfiguration: {
+        type: 'S3_VECTORS',
+        s3VectorsConfiguration: {
+          vectorBucketArn: s3VectorBucket.getAtt('VectorBucketArn').toString(),
+          indexName: 'askusda-kb-index',
+        },
+      },
     });
-
-    knowledgeBase.node.addDependency(vectorIndex);
+    knowledgeBase.addDependency(s3VectorIndex);
 
     const defaultPolicyConstruct = knowledgeBaseRole.node.tryFindChild('DefaultPolicy');
     if (defaultPolicyConstruct) {
@@ -184,51 +189,8 @@ export class USDAChatbotStack extends cdk.Stack {
       }
     }
 
-    // ==================== S3 Data Source (original — uses FM parsing) ====================
-    // This is the existing data source your teammate may be using.
-    // Points to the raw crawler output under jobs/
-    const s3DataSource = new bedrock.CfnDataSource(this, 'CrawlerS3DataSource', {
-      name: 'crawler-s3',
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: 'S3',
-        s3Configuration: {
-          bucketArn: crawlerBucket.bucketArn,
-          inclusionPrefixes: ['jobs/'],
-        },
-      },
-      vectorIngestionConfiguration: {
-        parsingConfiguration: {
-          parsingStrategy: 'BEDROCK_FOUNDATION_MODEL',
-          bedrockFoundationModelConfiguration: {
-            modelArn: `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
-          },
-        },
-      },
-    });
-    s3DataSource.addDependency(knowledgeBase);
-
-    // ==================== S3 Data Source v2 (new — default parsing, no throttling) ====================
-    // Points to the clean ingestion/ prefix with deduplicated content + Bedrock metadata.
-    // Uses default parser (text extraction) + default chunking (300 tokens).
-    // No FM model calls = no throttling, no 1000-file-per-job limit.
-    const s3DataSourceV2 = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceV2', {
-      name: 'crawler-s3-v2',
-      knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
-      dataSourceConfiguration: {
-        type: 'S3',
-        s3Configuration: {
-          bucketArn: crawlerBucket.bucketArn,
-          inclusionPrefixes: ['ingestion/'],
-        },
-      },
-    });
-    s3DataSourceV2.addDependency(knowledgeBase);
-
-    // ==================== S3 Data Source v3 (batch crawl — uses ingestion-v3/ prefix) ====================
-    // Points to batch crawl output from urls.yaml jobs.
-    // Uses default parser (text extraction) + default chunking (300 tokens).
-    const s3DataSourceV3 = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceV3', {
+    // ==================== S3 Vectors — Data Source (ingestion-v3/) ====================
+    const dataSource = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceS3V', {
       name: 'crawler-s3-v3',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
       dataSourceConfiguration: {
@@ -238,8 +200,17 @@ export class USDAChatbotStack extends cdk.Stack {
           inclusionPrefixes: ['ingestion-v3/'],
         },
       },
+      vectorIngestionConfiguration: {
+        chunkingConfiguration: {
+          chunkingStrategy: 'FIXED_SIZE',
+          fixedSizeChunkingConfiguration: {
+            maxTokens: 200,
+            overlapPercentage: 15,
+          },
+        },
+      },
     });
-    s3DataSourceV3.addDependency(knowledgeBase);
+    dataSource.addDependency(knowledgeBase);
 
     // ==================== KB Sync Lambda (triggers crawl + ingestion) ====================
     const kbSyncLambdaRole = new iam.Role(this, 'KBSyncLambdaRole', {
@@ -255,7 +226,6 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
-    // S3 permissions to read/write crawler bucket (metadata preparation)
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['s3:GetObject', 's3:PutObject', 's3:ListBucket'],
@@ -265,7 +235,6 @@ export class USDAChatbotStack extends cdk.Stack {
       ],
     }));
 
-    // ECS permissions to trigger crawl tasks
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ecs:RunTask'],
@@ -291,9 +260,7 @@ export class USDAChatbotStack extends cdk.Stack {
       memorySize: 1024,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        DATA_SOURCE_ID: s3DataSourceV2.attrDataSourceId,
-        DATA_SOURCE_ID_LEGACY: s3DataSource.attrDataSourceId,
-        DATA_SOURCE_ID_V3: s3DataSourceV3.attrDataSourceId,
+        DATA_SOURCE_ID_V3: dataSource.attrDataSourceId,
         CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_CLUSTER_ARN: crawlerClusterArn,
         CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
@@ -304,7 +271,7 @@ export class USDAChatbotStack extends cdk.Stack {
       },
     });
 
-    // ==================== IAM Role for Lambda ====================
+    // ==================== IAM Role for WebSocket Lambda ====================
     const lambdaRole = new iam.Role(this, 'WebSocketLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       managedPolicies: [
@@ -315,7 +282,6 @@ export class USDAChatbotStack extends cdk.Stack {
     conversationHistoryTable.grantReadWriteData(lambdaRole);
     escalationTable.grantReadWriteData(lambdaRole);
 
-    // S3 read access for citation URL fallback (reads crawler metadata files)
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['s3:GetObject', 's3:ListBucket'],
@@ -331,7 +297,6 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [
         'arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0',
         'arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0',
-        'arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0',
       ],
     }));
 
@@ -343,7 +308,7 @@ export class USDAChatbotStack extends cdk.Stack {
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:Retrieve', 'bedrock:RetrieveAndGenerate'],
+      actions: ['bedrock:Retrieve'],
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
     }));
 
@@ -361,12 +326,6 @@ export class USDAChatbotStack extends cdk.Stack {
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['aoss:APIAccessAll'],
-      resources: [vectorCollection.collectionArn],
-    }));
-
-    lambdaRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
       actions: ['execute-api:ManageConnections'],
       resources: [`arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:*/*`],
     }));
@@ -378,14 +337,12 @@ export class USDAChatbotStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/websocket-handler'),
       role: lambdaRole,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       environment: {
         CONVERSATION_TABLE: conversationHistoryTable.tableName,
         ESCALATION_TABLE: escalationTable.tableName,
-        OPENSEARCH_ENDPOINT: vectorCollection.collectionEndpoint,
         BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
-        EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
         CRAWLER_BUCKET: crawlerBucketName,
@@ -528,25 +485,21 @@ export class USDAChatbotStack extends cdk.Stack {
 
     const adminIntegration = new apigatewayv2_integrations.HttpLambdaIntegration('AdminIntegration', adminHandler);
 
-    // Protected routes
     for (const path of ['/metrics', '/feedback', '/escalations']) {
       adminApi.addRoutes({ path, methods: [apigatewayv2.HttpMethod.GET], integration: adminIntegration, authorizer: jwtAuthorizer });
     }
     adminApi.addRoutes({ path: '/escalations/{id}', methods: [apigatewayv2.HttpMethod.DELETE], integration: adminIntegration, authorizer: jwtAuthorizer });
     adminApi.addRoutes({ path: '/feedback/{id}', methods: [apigatewayv2.HttpMethod.DELETE], integration: adminIntegration, authorizer: jwtAuthorizer });
 
-    // Public routes
     adminApi.addRoutes({ path: '/feedback', methods: [apigatewayv2.HttpMethod.POST], integration: adminIntegration });
     adminApi.addRoutes({ path: '/escalations', methods: [apigatewayv2.HttpMethod.POST], integration: adminIntegration });
 
     // ==================== Stack Outputs ====================
     new cdk.CfnOutput(this, 'WebSocketUrl', { value: webSocketStage.url, description: 'WebSocket API URL', exportName: 'AskUSDA-WebSocketUrl' });
     new cdk.CfnOutput(this, 'ConversationTableName', { value: conversationHistoryTable.tableName, description: 'DynamoDB Conversation History Table', exportName: 'AskUSDA-ConversationTable' });
-    new cdk.CfnOutput(this, 'KnowledgeBaseId', { value: knowledgeBase.attrKnowledgeBaseId, description: 'Bedrock Knowledge Base ID', exportName: 'AskUSDA-KnowledgeBaseId' });
-    new cdk.CfnOutput(this, 'OpenSearchCollectionEndpoint', { value: vectorCollection.collectionEndpoint, description: 'OpenSearch Serverless Collection Endpoint', exportName: 'AskUSDA-OpenSearchEndpoint' });
-    new cdk.CfnOutput(this, 'S3DataSourceId', { value: s3DataSource.attrDataSourceId, description: 'S3 Data Source ID (legacy, FM parsing)', exportName: 'AskUSDA-S3DataSourceId' });
-    new cdk.CfnOutput(this, 'S3DataSourceV2Id', { value: s3DataSourceV2.attrDataSourceId, description: 'S3 Data Source V2 ID (default parsing)', exportName: 'AskUSDA-S3DataSourceV2Id' });
-    new cdk.CfnOutput(this, 'S3DataSourceV3Id', { value: s3DataSourceV3.attrDataSourceId, description: 'S3 Data Source V3 ID (batch crawl)', exportName: 'AskUSDA-S3DataSourceV3Id' });
+    new cdk.CfnOutput(this, 'KnowledgeBaseId', { value: knowledgeBase.attrKnowledgeBaseId, description: 'Bedrock Knowledge Base ID (S3 Vectors)', exportName: 'AskUSDA-KnowledgeBaseId' });
+    new cdk.CfnOutput(this, 'S3VectorBucketArn', { value: s3VectorBucket.getAtt('VectorBucketArn').toString(), description: 'S3 Vector Bucket ARN', exportName: 'AskUSDA-S3VectorBucketArn' });
+    new cdk.CfnOutput(this, 'S3DataSourceV3Id', { value: dataSource.attrDataSourceId, description: 'S3 Data Source ID', exportName: 'AskUSDA-S3DataSourceV3Id' });
     new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucketName, description: 'Web Crawler S3 Bucket', exportName: 'AskUSDA-CrawlerBucket' });
     new cdk.CfnOutput(this, 'GuardrailId', { value: guardrail.attrGuardrailId, description: 'Bedrock Guardrail ID', exportName: 'AskUSDA-GuardrailId' });
     new cdk.CfnOutput(this, 'AdminApiUrl', { value: adminApi.apiEndpoint, description: 'Admin API URL', exportName: 'AskUSDA-AdminApiUrl' });

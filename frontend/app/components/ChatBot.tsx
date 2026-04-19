@@ -61,7 +61,7 @@ interface Message {
 }
 
 interface WebSocketMessage {
-  type: "stream" | "response" | "typing" | "error" | "feedbackConfirmation" | "conversationId" | "message" | "escalationConfirmation";
+  type: "stream" | "typing" | "error" | "feedbackConfirmation" | "message" | "escalationConfirmation";
   chunk?: string;
   isComplete?: boolean;
   message?: string;
@@ -75,9 +75,9 @@ interface WebSocketMessage {
   isTyping?: boolean;
   success?: boolean;
   escalationId?: string;
-  question?: string; // The original question (echoed back from server)
-  maxConfidence?: number; // Maximum confidence score from retrieval
-  lowConfidence?: boolean; // Flag indicating if response was low confidence
+  question?: string;
+  maxConfidence?: number;
+  lowConfidence?: boolean;
 }
 
 const suggestedQuestions = [
@@ -178,6 +178,10 @@ export default function ChatBot() {
   const wsRef = useRef<WebSocket | null>(null);
   const currentStreamingMessageRef = useRef<string>("");
   const streamingMessageIdRef = useRef<string | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxReconnectAttempts = 10;
   
   // Speech-to-text state
   const [isListening, setIsListening] = useState(false);
@@ -204,11 +208,29 @@ export default function ChatBot() {
     currentStreamingMessageRef.current = "";
     streamingMessageIdRef.current = null;
     setIsTyping(false);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     // Stop any ongoing speech
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
     setSpeakingMessageId(null);
+  }, []);
+
+  // Safety timeout: force-clear typing state after 45s to prevent infinite spinner
+  const armTypingTimeout = useCallback(() => {
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+      currentStreamingMessageRef.current = "";
+      streamingMessageIdRef.current = null;
+    }, 45000);
+  }, []);
+
+  const clearTypingTimeout = useCallback(() => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
   }, []);
 
   // Initialize speech recognition (speech-to-text)
@@ -347,14 +369,14 @@ export default function ChatBot() {
     ws.onopen = () => {
       setIsConnected(true);
       setIsConnecting(false);
+      reconnectAttemptRef.current = 0;
     };
 
     ws.onmessage = (event) => {
       try {
         const data: WebSocketMessage = JSON.parse(event.data);
-        // Log full response data including citations for debugging
         if (data.citations && data.citations.length > 0) {
-          console.group('🔍 AskUSDA Sources/Citations');
+          console.group('AskUSDA Sources/Citations');
           console.log('Total citations:', data.citations.length);
           data.citations.forEach((c, i) => {
             console.log(`\n[${i + 1}] Source: ${c.source}`);
@@ -362,9 +384,6 @@ export default function ChatBot() {
             console.log(`    Text: ${c.text?.substring(0, 200)}...`);
           });
           console.groupEnd();
-        }
-        if (data.type === 'message') {
-          console.log('📋 Full response payload:', JSON.stringify(data, null, 2));
         }
         handleWebSocketMessage(data);
       } catch (error) {
@@ -382,6 +401,16 @@ export default function ChatBot() {
       setIsConnected(false);
       setIsConnecting(false);
       wsRef.current = null;
+
+      // Auto-reconnect with exponential backoff
+      if (reconnectAttemptRef.current < maxReconnectAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
+        reconnectAttemptRef.current += 1;
+        console.log(`WebSocket closed. Reconnecting in ${delay}ms (attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts})`);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (!wsRef.current) connectWebSocket();
+        }, delay);
+      }
     };
 
     wsRef.current = ws;
@@ -390,62 +419,20 @@ export default function ChatBot() {
   // Handle incoming WebSocket messages
   const handleWebSocketMessage = useCallback((data: WebSocketMessage) => {
     switch (data.type) {
-      case "conversationId":
-        // Store conversation ID for feedback tracking
-        if (data.conversationId && streamingMessageIdRef.current) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === streamingMessageIdRef.current
-                ? { ...msg, conversationId: data.conversationId }
-                : msg
-            )
-          );
-        }
-        break;
-
       case "typing":
-        setIsTyping(data.isTyping || false);
-        break;
-
-      case "message":
-        // Complete message with all data
-        const messageId = streamingMessageIdRef.current || Date.now().toString();
-        setMessages((prev) => {
-          const existingIndex = prev.findIndex(msg => msg.id === messageId);
-          const newMessage: Message = {
-            id: messageId,
-            text: data.message || "",
-            sender: "bot",
-            timestamp: new Date(),
-            citations: data.citations,
-            conversationId: data.conversationId,
-            sessionId: data.sessionId,
-            responseTimeMs: data.responseTimeMs,
-            question: data.question, // Store the question for feedback submission
-            isStreaming: false,
-          };
-          
-          if (existingIndex >= 0) {
-            return prev.map((msg, idx) => idx === existingIndex ? newMessage : msg);
-          } else {
-            return [...prev, newMessage];
-          }
-        });
-        
-        if (data.sessionId) {
-          setSessionId(data.sessionId);
+        if (data.isTyping) {
+          setIsTyping(true);
+          armTypingTimeout();
+        } else {
+          setIsTyping(false);
+          clearTypingTimeout();
         }
-        
-        currentStreamingMessageRef.current = "";
-        streamingMessageIdRef.current = null;
-        setIsTyping(false);
         break;
 
       case "stream":
         if (data.chunk) {
           currentStreamingMessageRef.current += data.chunk;
           
-          // Create or update streaming message
           if (!streamingMessageIdRef.current) {
             streamingMessageIdRef.current = Date.now().toString();
             setMessages((prev) => [
@@ -458,6 +445,7 @@ export default function ChatBot() {
                 isStreaming: true,
               },
             ]);
+            setIsTyping(false);
           } else {
             setMessages((prev) =>
               prev.map((msg) =>
@@ -469,56 +457,51 @@ export default function ChatBot() {
           }
         }
 
-        if (data.isComplete) {
-          // Mark streaming as complete
-          if (streamingMessageIdRef.current) {
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === streamingMessageIdRef.current
-                  ? { ...msg, isStreaming: false }
-                  : msg
-              )
-            );
-          }
-        }
-        break;
-
-      case "response":
-        // Final response with citations - update the streaming message or add new one
-        if (streamingMessageIdRef.current) {
+        if (data.isComplete && streamingMessageIdRef.current) {
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === streamingMessageIdRef.current
-                ? {
-                    ...msg,
-                    text: data.message || msg.text,
-                    citations: data.citations,
-                    isStreaming: false,
-                  }
+                ? { ...msg, isStreaming: false }
                 : msg
             )
           );
-        } else if (data.message) {
-          // Non-streaming response
-          const messageText = data.message;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Date.now().toString(),
-              text: messageText,
-              sender: "bot",
-              timestamp: new Date(),
-              citations: data.citations,
-            },
-          ]);
         }
-        // Reset streaming refs
+        break;
+
+      case "message": {
+        clearTypingTimeout();
+        const messageId = streamingMessageIdRef.current || Date.now().toString();
+        const newMessage: Message = {
+          id: messageId,
+          text: data.message || "",
+          sender: "bot",
+          timestamp: new Date(),
+          citations: data.citations,
+          conversationId: data.conversationId,
+          sessionId: data.sessionId,
+          responseTimeMs: data.responseTimeMs,
+          question: data.question,
+          isStreaming: false,
+        };
+
+        setMessages((prev) => {
+          const existingIndex = prev.findIndex(msg => msg.id === messageId);
+          if (existingIndex >= 0) {
+            return prev.map((msg, idx) => idx === existingIndex ? newMessage : msg);
+          }
+          return [...prev, newMessage];
+        });
+        
+        if (data.sessionId) setSessionId(data.sessionId);
+        
         currentStreamingMessageRef.current = "";
         streamingMessageIdRef.current = null;
         setIsTyping(false);
         break;
+      }
 
       case "error":
+        clearTypingTimeout();
         setMessages((prev) => [
           ...prev,
           {
@@ -534,7 +517,6 @@ export default function ChatBot() {
         break;
 
       case "feedbackConfirmation":
-        // Feedback confirmed successfully
         break;
 
       case "escalationConfirmation":
@@ -552,7 +534,7 @@ export default function ChatBot() {
         }
         break;
     }
-  }, []);
+  }, [armTypingTimeout, clearTypingTimeout]);
 
   // Send feedback to backend (this also saves the conversation - only conversations with feedback are stored)
   const handleFeedback = useCallback((messageId: string, feedback: "positive" | "negative") => {
@@ -596,9 +578,9 @@ export default function ChatBot() {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      if (wsRef.current) wsRef.current.close();
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, []);
 
@@ -618,6 +600,7 @@ export default function ChatBot() {
     // Send via WebSocket if connected
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       setIsTyping(true);
+      armTypingTimeout();
       wsRef.current.send(
         JSON.stringify({
           action: "sendMessage",

@@ -45,6 +45,12 @@ next-env.d.ts
 # Kiro
 .kiro/
 
+# Cursor
+.cursor/
+
+# Build artifacts
+*.zip
+
 # Environment variables
 .env
 **/.env
