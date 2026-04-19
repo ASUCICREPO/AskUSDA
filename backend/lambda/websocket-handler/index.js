@@ -87,19 +87,26 @@ function getApiGatewayClient() {
 }
 
 async function sendToClient(connectionId, payload) {
-  try {
-    await getApiGatewayClient().send(new PostToConnectionCommand({
-      ConnectionId: connectionId,
-      Data: JSON.stringify(payload),
-    }));
-    return true;
-  } catch (error) {
-    if (error.statusCode === 410 || error.name === 'GoneException') {
-      console.log(`Connection ${connectionId} is stale`);
-      return false;
+  const maxRetries = 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      await getApiGatewayClient().send(new PostToConnectionCommand({
+        ConnectionId: connectionId,
+        Data: JSON.stringify(payload),
+      }));
+      return true;
+    } catch (error) {
+      if (error.statusCode === 410 || error.name === 'GoneException') {
+        console.log(`Connection ${connectionId} is stale`);
+        return false;
+      }
+      if (error.name === 'TooManyRequestsException' && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 200 * (attempt + 1)));
+        continue;
+      }
+      console.error('Error sending to client:', error);
+      throw error;
     }
-    console.error('Error sending to client:', error);
-    throw error;
   }
 }
 
@@ -272,12 +279,22 @@ async function streamResponse(connectionId, userMessage, context) {
 
   let fullResponse = '';
   let blocked = false;
+  let chunkBuffer = '';
+  let lastSendTime = Date.now();
+  const FLUSH_INTERVAL_MS = 150;
 
   for await (const event of response.stream) {
     if (event.contentBlockDelta?.delta?.text) {
       const chunk = event.contentBlockDelta.delta.text;
       fullResponse += chunk;
-      await sendToClient(connectionId, { type: 'stream', chunk, isComplete: false });
+      chunkBuffer += chunk;
+
+      const now = Date.now();
+      if (now - lastSendTime >= FLUSH_INTERVAL_MS || chunkBuffer.length > 200) {
+        await sendToClient(connectionId, { type: 'stream', chunk: chunkBuffer, isComplete: false });
+        chunkBuffer = '';
+        lastSendTime = now;
+      }
     }
     if (event.messageStop?.stopReason === 'guardrail_intervened') {
       blocked = true;
@@ -285,6 +302,10 @@ async function streamResponse(connectionId, userMessage, context) {
     if (event.metadata?.usage) {
       console.log('Token usage:', event.metadata.usage);
     }
+  }
+
+  if (chunkBuffer) {
+    await sendToClient(connectionId, { type: 'stream', chunk: chunkBuffer, isComplete: false });
   }
 
   await sendToClient(connectionId, { type: 'stream', chunk: '', isComplete: true });
