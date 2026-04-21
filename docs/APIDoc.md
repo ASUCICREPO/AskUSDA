@@ -62,25 +62,31 @@ Connect to the WebSocket URL, then send JSON messages. The route is determined b
 
 #### sendMessage
 
-- **Purpose:** Send a user question to the USDA knowledge base and receive an answer with citations (single response, not chunked streaming).
+- **Purpose:** Send a user question to the USDA knowledge base and receive a streaming answer with citations.
 
 - **Request (body):**
 ```json
 {
   "message": "string (required) - The user's question",
-  "sessionId": "string (optional) - Bedrock session ID for conversation continuity"
+  "sessionId": "string (optional) - Session ID for conversation continuity"
 }
 ```
 
 - **Response (sent to client over WebSocket):**
-  - `type: "typing"`, `isTyping: true` — typing indicator
-  - `type: "message"` — final message with:
-    - `message` — answer text
-    - `citations` — array of `{ id, text, source, score }`
+  - `type: "typing"`, `isTyping: true` — typing indicator (sent immediately)
+  - `type: "stream"` — streaming text chunks (sent every ~150ms or 200 chars):
+    - `chunk` — partial text content
+    - `isComplete: false` — indicates more chunks coming
+  - `type: "stream"`, `isComplete: true` — final stream marker (empty chunk)
+  - `type: "message"` — final message with full metadata:
+    - `message` — complete answer text
+    - `citations` — array of `{ id, text, source, title, score }` (top 3 relevant sources)
     - `conversationId` — UUID for this Q&A (use when submitting feedback)
-    - `sessionId` — Bedrock session ID (optional, for follow-up)
-    - `responseTimeMs` — response time
+    - `sessionId` — session ID (for follow-up)
+    - `responseTimeMs` — total response time
     - `question` — echoed user question
+    - `blocked` — true if guardrail intervened
+  - `type: "typing"`, `isTyping: false` — typing indicator cleared
   - `type: "error"` — `message` with error description (e.g. guardrail blocked, server error)
 
 - **Guardrail:** Input is checked; if blocked, client receives `type: "message"` with `blocked: true` and a safe message.

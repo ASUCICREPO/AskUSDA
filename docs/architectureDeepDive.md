@@ -82,13 +82,13 @@ The **AskUSDA-WebSocketHandler** Lambda (`lambda/websocket-handler/index.js`) im
 
 ### 6. Data Sources (Knowledge Base)
 
-The Knowledge Base is populated via an **S3 data source** (`crawler-s3-v3`):
+The Knowledge Base is populated via an **S3 data source** (`crawler-s3-v1`):
 
-- An external **ECS Fargate web crawler** (managed by the `KBSyncHandler` Lambda) crawls USDA.gov and farmers.gov content
-- Crawled content is stored in S3 (`ingestion-v3/` prefix) with `.metadata.json` sidecar files
-- The Knowledge Base ingests from S3, chunking with **fixed-size** strategy (200 tokens, 15% overlap)
+- An **ECS Fargate web crawler** (deployed by `AskUSDA-Crawler` stack, orchestrated by the `KBSyncHandler` Lambda) crawls USDA.gov and farmers.gov content
+- Crawled content is stored in S3 (`jobs/{job_id}/` prefix) by the crawler, then copied to `ingestion-v1/` by the `KBSyncHandler` Lambda with `.metadata.json` sidecar files
+- The Knowledge Base ingests from S3 (`ingestion-v1/` prefix), chunking with **fixed-size** strategy (200 tokens, 15% overlap)
 - Content is parsed, embedded with Titan Embed v2, and stored in S3 Vectors
-- Sync can be triggered manually via the Bedrock console, the `KBSyncHandler` Lambda, or via EventBridge (daily at 6:00 AM UTC)
+- Sync can be triggered manually via the Bedrock console or by invoking the `KBSyncHandler` Lambda with `action: "ingest"`
 
 ### 7. Admin Flow
 
@@ -143,7 +143,7 @@ Two DynamoDB tables store application data:
 ### Backend Infrastructure
 
 - **AWS CDK**: Infrastructure as Code (TypeScript)
-  - Single stack defines DynamoDB, S3 Vectors, Bedrock KB, Lambdas, API Gateways, Amplify app
+  - Two stacks: `AskUSDA-Crawler` (ECS/VPC/S3) and `AskUSDA-Backend` (KB/APIs/Lambdas/DynamoDB)
 
 - **Amazon API Gateway**:
   - **WebSocket API** for chat and feedback
@@ -153,6 +153,8 @@ Two DynamoDB tables store application data:
   - **AskUSDA-WebSocketHandler** (`lambda/websocket-handler/index.js`): WebSocket routes (sendMessage, submitFeedback, submitEscalation), Knowledge Base Retrieve + ConverseStream, guardrails, DynamoDB
   - **AskUSDA-AdminHandler** (`lambda/admin-api/index.js`): HTTP handlers for metrics, feedback, escalations
   - **AskUSDA-KBSyncHandler** (`lambda/kb-sync-handler/index.js`): Orchestrates ECS Fargate web crawler and triggers KB ingestion
+
+- **Amazon ECS Fargate**: Web crawler container execution (deployed by `AskUSDA-Crawler` stack)
 
 ### AI/ML Services
 
@@ -185,11 +187,23 @@ This project uses **AWS CDK** to define and deploy infrastructure.
 
 ### CDK Stack Structure
 
+The project deploys **two CDK stacks** in sequence:
+
+1. **AskUSDA-Crawler** (`crawler-stack.ts`) — ECS Fargate infrastructure for web crawling
+2. **AskUSDA-Backend** (`backend-stack.ts`) — Main backend (KB, Lambdas, APIs, DynamoDB)
+
 ```
 backend/
 ├── bin/
-│   └── backend.ts              # CDK app entry point
+│   └── backend.ts              # CDK app entry point (deploys both stacks)
+├── crawler/                    # Web crawler Docker image
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   ├── requirements.txt
+│   ├── urls.yaml               # Seed URLs for crawling
+│   └── worker/                 # Python crawler code
 ├── lib/
+│   ├── crawler-stack.ts        # Crawler infrastructure (ECS, VPC, S3)
 │   └── backend-stack.ts        # Main stack definition
 ├── lambda/
 │   ├── websocket-handler/
@@ -208,6 +222,22 @@ backend/
 
 ### Key CDK Constructs
 
+**AskUSDA-Crawler Stack:**
+
+1. **S3 Bucket** (`aws-cdk-lib/aws-s3`)
+   - Crawler data bucket for crawled content (`jobs/` prefix) and ingestion staging (`ingestion-v1/` prefix)
+
+2. **VPC** (`aws-cdk-lib/aws-ec2`)
+   - Public subnets for ECS Fargate tasks (no NAT gateway for cost savings)
+
+3. **ECS Cluster + Task Definition** (`aws-cdk-lib/aws-ecs`)
+   - Fargate cluster and task definition for the web crawler container
+
+4. **Security Group** (`aws-cdk-lib/aws-ec2`)
+   - Allows outbound internet access for crawling
+
+**AskUSDA-Backend Stack:**
+
 1. **DynamoDB Table** (`aws-cdk-lib/aws-dynamodb`)
    - `ConversationLogs` and `EscalationRequests` with GSIs and TTL
 
@@ -218,7 +248,7 @@ backend/
    - Bedrock Knowledge Base with Titan embeddings and S3 Vectors storage
 
 4. **CfnDataSource** (`aws-cdk-lib/aws-bedrock`)
-   - S3 data source (`crawler-s3-v3`) pointing to the web crawler output bucket (`ingestion-v3/` prefix)
+   - S3 data source (`crawler-s3-v1`) pointing to the web crawler output bucket (`ingestion-v1/` prefix)
 
 5. **CfnGuardrail** (`aws-cdk-lib/aws-bedrock`)
    - Content filters for input/output
@@ -339,13 +369,19 @@ Admin → Amplify (/admin) → HTTP API (GET /metrics, /feedback, /escalations)
 ### Knowledge Ingestion Flow
 
 ```
-Web Crawler (ECS Fargate) → S3 (ingestion-v3/)
-                    ↓
-         Bedrock Data Source ingest
-                    ↓
-         Fixed-size Chunking (200 tokens) + Titan Embeddings
-                    ↓
-         S3 Vectors (vector index)
+KBSyncHandler Lambda (action: "crawl")
+         ↓
+ECS Fargate Web Crawler → S3 (jobs/{job_id}/)
+         ↓
+KBSyncHandler Lambda (action: "ingest" or auto-triggered)
+         ↓
+Copy + metadata transform → S3 (ingestion-v1/)
+         ↓
+Bedrock Data Source ingest
+         ↓
+Fixed-size Chunking (200 tokens) + Titan Embeddings
+         ↓
+S3 Vectors (vector index)
 ```
 
 ---

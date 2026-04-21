@@ -186,15 +186,21 @@ cdk deploy
 
 When prompted, review IAM and resource changes, then type `y` to confirm.
 
-The stack `AskUSDA-Backend` deploys:
+The deployment creates **two stacks**:
 
-- DynamoDB (Conversation History, Escalation Requests)  
-- S3 Vectors (vector store)  
-- Bedrock Knowledge Base (S3 data source for USDA web crawler output)  
-- Lambda (WebSocket handler, Admin API)  
-- API Gateway (WebSocket + HTTP Admin API)  
-- Cognito User Pool for admin authentication  
-- EventBridge rule for daily Knowledge Base sync  
+1. **AskUSDA-Crawler** — ECS Fargate infrastructure for web crawling:
+   - S3 bucket for crawled data
+   - VPC with public subnets
+   - ECS cluster and task definition
+   - Security group for outbound access
+
+2. **AskUSDA-Backend** — Main backend services:
+   - DynamoDB (Conversation History, Escalation Requests)  
+   - S3 Vectors (vector store)  
+   - Bedrock Knowledge Base (S3 data source for crawler output)  
+   - Lambda (WebSocket handler, Admin API, KB Sync handler)  
+   - API Gateway (WebSocket + HTTP Admin API)  
+   - Cognito User Pool for admin authentication  
 
 #### 5. Build and Deploy the Frontend Separately
 
@@ -232,20 +238,42 @@ The CDK stack does not deploy the frontend. To run the app:
 
 ## Post-Deployment Steps
 
-### 1. Sync the Knowledge Base
+### 1. Trigger the Web Crawler and Sync the Knowledge Base
 
-The Knowledge Base uses a **web crawler** data source (usda.gov, farmers.gov). Indexing can be triggered via the Bedrock console or the existing EventBridge daily job.
+The Knowledge Base uses an **S3 data source** that ingests content crawled by the ECS Fargate web crawler. After deployment, you need to run the crawler to populate the Knowledge Base.
 
-**Option A — Bedrock console**
+**Option A — Trigger via Lambda (recommended)**
+
+Invoke the `KBSyncHandler` Lambda to start a crawl job:
+
+```bash
+aws lambda invoke \
+  --function-name AskUSDA-KBSyncHandler \
+  --payload '{"action":"crawl","url":"https://www.fns.usda.gov/snap","maxPages":"100","scopeType":"path"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+```
+
+The crawler runs asynchronously. When it completes, it automatically triggers ingestion into the Knowledge Base.
+
+**Option B — Manual ingestion only (if crawler already ran)**
+
+If the crawler has already populated the S3 bucket, trigger ingestion directly:
+
+```bash
+aws lambda invoke \
+  --function-name AskUSDA-KBSyncHandler \
+  --payload '{"action":"ingest"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+```
+
+**Option C — Bedrock console**
 
 1. Go to **AWS Console → Bedrock → Knowledge bases**.  
-2. Open the knowledge base created by the stack (e.g. `AskUSDA-KnowledgeBase`).  
-3. Open the web crawler data source and click **Sync** (or **Run ingestion**).  
+2. Open the knowledge base created by the stack (e.g. `AskUSDA-KB`).  
+3. Open the S3 data source and click **Sync** (or **Run ingestion**).  
 4. Wait until the sync status is **Available**.
-
-**Option B — EventBridge**
-
-The stack creates an EventBridge rule that triggers a daily sync (e.g. 6:00 AM UTC). You can leave it as is or run an ingestion job manually via the Bedrock API/console.
 
 ### 2. Create an Admin User in Cognito
 
@@ -278,8 +306,9 @@ After a successful backend deployment, you can read these CloudFormation outputs
 | `ConversationTableName` | DynamoDB Conversation History table |
 | `EscalationTableName` | DynamoDB Escalation Requests table |
 | `KnowledgeBaseId` | Bedrock Knowledge Base ID |
-| `S3DataSourceV3Id` | Bedrock S3 data source ID |
+| `S3DataSourceV1Id` | Bedrock S3 data source ID |
 | `S3VectorBucketArn` | S3 Vectors bucket ARN |
+| `CrawlerBucketName` | S3 bucket for web crawler data |
 | `GuardrailId` | Bedrock Guardrail ID |
 | `AdminUserPoolId` | Cognito User Pool ID for admin |
 | `AdminUserPoolClientId` | Cognito App Client ID |
@@ -331,6 +360,7 @@ Use your account ID and region (e.g. `us-east-1`).
 1. In **Bedrock → Knowledge bases**, confirm the Knowledge Base exists and the data source has been **synced** (status **Available**).  
 2. Check the WebSocket Lambda's **CloudWatch** logs for Bedrock or S3 Vectors errors.  
 3. Verify the Lambda execution role has `bedrock:Retrieve`, `bedrock-runtime:ConverseStream`, and `s3vectors:*` permissions.
+4. Ensure the web crawler has run and populated the S3 bucket with content in the `ingestion-v1/` prefix.
 
 ### Amplify Build or Upload Failed
 

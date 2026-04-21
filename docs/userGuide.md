@@ -80,8 +80,8 @@ Type in the input field and press **Enter** or click **Send**.
 When the bot replies:
 
 1. A **typing indicator** (e.g. animated dots) shows while it’s thinking.
-2. The **full answer** appears in the chat (formatted with markdown: lists, links, etc.).
-3. **Citations** (source links) are shown below the answer when available.
+2. The **answer streams in progressively** — you'll see text appearing as it's generated (formatted with markdown: lists, links, etc.).
+3. **Citations** (source links) are shown below the answer when the response completes.
 
 ---
 

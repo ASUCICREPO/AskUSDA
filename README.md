@@ -118,14 +118,23 @@ For developers looking to extend or modify this project, see the [Modification G
 ```
 ├── backend/
 │   ├── bin/
-│   │   └── backend.ts
+│   │   └── backend.ts             # CDK app entry point (deploys Crawler + Backend stacks)
+│   ├── crawler/                   # Web crawler Docker image and configuration
+│   │   ├── Dockerfile
+│   │   ├── entrypoint.sh
+│   │   ├── requirements.txt
+│   │   ├── urls.yaml              # Seed URLs for crawling
+│   │   └── worker/                # Python crawler code
 │   ├── lambda/
 │   │   ├── websocket-handler/
 │   │   │   └── index.js           # WebSocket chat, feedback, escalation Lambda
-│   │   └── admin-api/
-│   │       └── index.js           # Admin HTTP API Lambda (metrics, feedback, escalations)
+│   │   ├── admin-api/
+│   │   │   └── index.js           # Admin HTTP API Lambda (metrics, feedback, escalations)
+│   │   └── kb-sync-handler/
+│   │       └── index.js           # KB sync Lambda (triggers ECS crawler + Bedrock ingestion)
 │   ├── lib/
-│   │   └── backend-stack.ts
+│   │   ├── backend-stack.ts       # Main backend stack (KB, Lambdas, APIs, DynamoDB)
+│   │   └── crawler-stack.ts       # Crawler infrastructure stack (ECS, VPC, S3)
 │   ├── cdk.json
 │   ├── package.json
 │   └── tsconfig.json
@@ -161,9 +170,10 @@ For developers looking to extend or modify this project, see the [Modification G
 ### Directory Explanations:
 
 1. **backend/** - Contains all backend infrastructure and serverless functions
-   - `bin/` - CDK app entry point
-   - `lambda/` - Lambda source: `websocket-handler` (chat, feedback, escalation) and `admin-api` (metrics, feedback, escalations)
-   - `lib/` - CDK stack definitions
+   - `bin/` - CDK app entry point (deploys both `AskUSDA-Crawler` and `AskUSDA-Backend` stacks)
+   - `crawler/` - Web crawler Docker image, Python worker code, and seed URL configuration
+   - `lambda/` - Lambda source: `websocket-handler` (chat, feedback, escalation), `admin-api` (metrics, feedback, escalations), and `kb-sync-handler` (crawler orchestration + KB ingestion)
+   - `lib/` - CDK stack definitions (`crawler-stack.ts` for ECS/VPC, `backend-stack.ts` for KB/APIs/Lambdas)
 
 2. **frontend/** - Next.js frontend application
    - `app/` - Next.js App Router pages and layouts

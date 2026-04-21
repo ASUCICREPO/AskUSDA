@@ -30,8 +30,16 @@ This document explains how to modify and extend AskUSDA. Whether you want to add
 
 ```
 ├── backend/
-│   ├── bin/backend.ts                 # CDK app entry point
-│   ├── lib/backend-stack.ts           # CDK stack (DynamoDB, S3 Vectors, KB, Lambdas, APIs, Cognito)
+│   ├── bin/backend.ts                 # CDK app entry point (deploys Crawler + Backend stacks)
+│   ├── crawler/                       # Web crawler Docker image
+│   │   ├── Dockerfile
+│   │   ├── entrypoint.sh
+│   │   ├── requirements.txt
+│   │   ├── urls.yaml                  # Seed URLs for crawling
+│   │   └── worker/                    # Python crawler code
+│   ├── lib/
+│   │   ├── crawler-stack.ts           # Crawler infrastructure (ECS, VPC, S3)
+│   │   └── backend-stack.ts           # Main backend stack (KB, Lambdas, APIs, DynamoDB)
 │   └── lambda/
 │       ├── websocket-handler/         # WebSocket Lambda (chat, feedback, escalation)
 │       │   ├── index.js
@@ -175,22 +183,28 @@ exports.handler = async (event) => {
    - Grant DynamoDB, Bedrock, or other permissions as needed.
    - Wire it to API Gateway (HTTP or WebSocket) or EventBridge if applicable.
 
-### Modifying the CDK Stack
+### Modifying the CDK Stacks
 
-**Location**: `backend/lib/backend-stack.ts`
+**Location**: `backend/lib/crawler-stack.ts` and `backend/lib/backend-stack.ts`
 
-The stack is organized roughly as:
+The project deploys **two CDK stacks**:
 
-1. **DynamoDB** (~lines 19–65): Conversation History, Escalation Requests (and GSIs).
-2. **S3 Vectors** (~67–109): Vector bucket and index for the Knowledge Base.
-3. **Bedrock Knowledge Base** (~134–169): KB definition with Titan embeddings and S3 Vectors storage.
-4. **S3 Data Source** (~171–220): S3 data source (`crawler-s3-v3`) with fixed-size chunking (200 tokens, 15% overlap).
-5. **KB Sync Lambda + EventBridge** (~222–320): Daily KB sync via ECS Fargate web crawler + ingestion.
-6. **WebSocket Lambda + API** (~388–509): Handler, WebSocket API (`$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`).
-7. **Guardrail** (~511–539): Bedrock guardrail for content filtering.
-8. **Cognito** (~541–576): Admin User Pool and app client.
-9. **Admin Lambda + HTTP API** (~578–693): Admin API routes, JWT authorizer, CORS.
-10. **Outputs** (~695–767): WebSocket URL, Admin API URL, table names, KB IDs, data source IDs, Cognito IDs, etc.
+1. **AskUSDA-Crawler** (`crawler-stack.ts`) — ECS Fargate infrastructure for web crawling
+2. **AskUSDA-Backend** (`backend-stack.ts`) — Main backend (KB, Lambdas, APIs, DynamoDB)
+
+**backend-stack.ts** is organized roughly as:
+
+1. **Crawler Config** (~lines 25–35): References to crawler stack outputs (bucket, cluster, task def, subnets, security group)
+2. **DynamoDB** (~lines 43–85): Conversation History, Escalation Requests (and GSIs)
+3. **S3 Vectors** (~lines 145–167): Vector bucket and index for the Knowledge Base
+4. **Bedrock Knowledge Base** (~lines 169–202): KB definition with Titan embeddings and S3 Vectors storage
+5. **S3 Data Source** (~lines 204–225): S3 data source (`crawler-s3-v1`) with fixed-size chunking (200 tokens, 15% overlap)
+6. **KB Sync Lambda** (~lines 227–284): Orchestrates ECS Fargate web crawler + ingestion
+7. **WebSocket Lambda + API** (~lines 286–397): Handler, WebSocket API (`$connect`, `$disconnect`, `sendMessage`, `submitFeedback`, `submitEscalation`)
+8. **Guardrail** (~lines 399–424): Bedrock guardrail for content filtering
+9. **Cognito** (~lines 426–445): Admin User Pool and app client
+10. **Admin Lambda + HTTP API** (~lines 447–507): Admin API routes, JWT authorizer, CORS
+11. **Outputs** (~lines 509–520): WebSocket URL, Admin API URL, table names, KB IDs, data source IDs, Cognito IDs, etc.
 
 When you add resources, follow existing patterns (environments, roles, dependencies) and update outputs if new URLs or IDs need to be exposed.
 
@@ -202,9 +216,19 @@ When you add resources, follow existing patterns (environments, roles, dependenc
 
 **Location**: `backend/lib/backend-stack.ts` (S3 Data Source definition)
 
-The Knowledge Base uses an **S3 data source** (`crawler-s3-v3`) that ingests from the web crawler output bucket (`ingestion-v3/` prefix). The web crawler is an ECS Fargate task orchestrated by the `KBSyncHandler` Lambda.
+The Knowledge Base uses an **S3 data source** (`crawler-s3-v1`) that ingests from the web crawler output bucket (`ingestion-v1/` prefix). The web crawler is an ECS Fargate task orchestrated by the `KBSyncHandler` Lambda.
 
-To modify what content is crawled, update the crawler configuration in `backend/lambda/kb-sync-handler/index.js`, which controls the seed URLs, inclusion filters, and crawl parameters.
+To modify what content is crawled, you can:
+
+1. **Update seed URLs**: Edit `backend/crawler/urls.yaml` to change the URLs the crawler visits
+2. **Trigger a custom crawl**: Invoke the `KBSyncHandler` Lambda with custom parameters:
+   ```bash
+   aws lambda invoke \
+     --function-name AskUSDA-KBSyncHandler \
+     --payload '{"action":"crawl","url":"https://example.usda.gov","maxPages":"100","scopeType":"path"}' \
+     --cli-binary-format raw-in-base64-out \
+     response.json
+   ```
 
 To add a new S3 data source, create a new `bedrock.CfnDataSource` following the same pattern as the existing one. Remember to also add the new data source ID to the `KBSyncHandler` Lambda environment variables so it gets included in syncs.
 
@@ -214,10 +238,29 @@ The data source uses **fixed-size chunking** (200 tokens, 15% overlap) configure
 
 ### Syncing the Knowledge Base
 
-After changing data sources or URLs:
+After changing data sources or running a new crawl:
 
-1. **AWS Console**: Bedrock → Knowledge bases → your KB → Data sources → **Sync** (or run ingestion).
-2. **CLI**:
+1. **Via Lambda (recommended)**:
+
+```bash
+# Trigger crawl + automatic ingestion
+aws lambda invoke \
+  --function-name AskUSDA-KBSyncHandler \
+  --payload '{"action":"crawl","url":"https://www.usda.gov","maxPages":"500"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+
+# Or trigger ingestion only (if crawler already ran)
+aws lambda invoke \
+  --function-name AskUSDA-KBSyncHandler \
+  --payload '{"action":"ingest"}' \
+  --cli-binary-format raw-in-base64-out \
+  response.json
+```
+
+2. **AWS Console**: Bedrock → Knowledge bases → your KB → Data sources → **Sync** (or run ingestion).
+
+3. **CLI**:
 
 ```bash
 aws bedrock-agent start-ingestion-job \
@@ -225,7 +268,7 @@ aws bedrock-agent start-ingestion-job \
   --data-source-id YOUR_DATA_SOURCE_ID
 ```
 
-Use `KnowledgeBaseId` and `S3DataSourceV3Id` from the CDK outputs.
+Use `KnowledgeBaseId` and `S3DataSourceV1Id` from the CDK outputs.
 
 ---
 
