@@ -2,6 +2,9 @@
 .cdk.staging
 cdk.out
 
+# CDK context cache (contains account-specific data)
+cdk.context.json
+
 # Dependencies
 node_modules
 /.pnp

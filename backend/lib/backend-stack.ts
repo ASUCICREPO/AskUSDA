@@ -9,18 +9,30 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import { CrawlerStack } from './crawler-stack';
+
+export interface USDAChatbotStackProps extends cdk.StackProps {
+  /**
+   * Reference to the CrawlerStack to get ECS infrastructure values
+   */
+  crawlerStack: CrawlerStack;
+}
 
 export class USDAChatbotStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: USDAChatbotStackProps) {
     super(scope, id, props);
 
-    // ==================== Web Crawler Config (from CDK context or AskUSDA-Crawler stack) ====================
-    const crawlerBucketName = this.node.tryGetContext('crawlerBucketName') || 'webcrawlerstack-crawlerdatabucketea3cc496-exqm1c1h8tiz';
-    const crawlerClusterArn = this.node.tryGetContext('crawlerClusterArn') || 'arn:aws:ecs:us-west-2:216989103356:cluster/askusda-crawler-cluster';
-    const crawlerTaskDefArn = this.node.tryGetContext('crawlerTaskDefArn') || 'arn:aws:ecs:us-west-2:216989103356:task-definition/AskUSDACrawlerCrawlerTaskDef89749D0F:1';
-    const crawlerContainerName = this.node.tryGetContext('crawlerContainerName') || 'CrawlerContainer';
-    const crawlerSubnetIds = this.node.tryGetContext('crawlerSubnetIds') || 'subnet-0bd8011385bd21fc8,subnet-073e3263a09184376';
-    const crawlerSecurityGroupId = this.node.tryGetContext('crawlerSecurityGroupId') || 'sg-08894979079a5f8b6';
+    // ==================== Web Crawler Config (from CrawlerStack) ====================
+    const { crawlerStack } = props;
+    const crawlerBucketName = crawlerStack.dataBucket.bucketName;
+    const crawlerClusterArn = crawlerStack.cluster.clusterArn;
+    const crawlerTaskDefArn = crawlerStack.taskDefinition.taskDefinitionArn;
+    const crawlerContainerName = crawlerStack.containerName;
+    const crawlerSubnetIds = crawlerStack.vpc.publicSubnets.map(s => s.subnetId).join(',');
+    const crawlerSecurityGroupId = crawlerStack.securityGroup.securityGroupId;
+
+    // Add dependency to ensure crawler stack deploys first
+    this.addDependency(crawlerStack);
 
     // ==================== Amplify App ID (from CDK context) ====================
     const amplifyAppId = this.node.tryGetContext('amplifyAppId') || '';

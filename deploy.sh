@@ -23,6 +23,7 @@ AMPLIFY_APP_NAME="AskUSDA-Frontend"
 CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-deployment"
 REPOSITORY_URL="https://github.com/ASUCICREPO/AskUSDA.git" # IMPORTANT: repo url from which codebuild runs
 BRANCH_NAME="${BRANCH_NAME:-master}" # Branch to deploy (override with BRANCH_NAME env var)
+CRAWLER_BUCKET_NAME="${CRAWLER_BUCKET_NAME:-}" # S3 bucket for crawler (REQUIRED - override with CRAWLER_BUCKET_NAME env var)
 
 # Global variables
 WEBSOCKET_URL=""
@@ -641,6 +642,14 @@ print_success "Amplify policy attached"
 # --- Phase 3: Create Unified CodeBuild Project ---
 print_codebuild "🏗️ Phase 3: Creating Unified CodeBuild Project..."
 
+# Validate required CRAWLER_BUCKET_NAME
+if [ -z "$CRAWLER_BUCKET_NAME" ]; then
+    print_error "CRAWLER_BUCKET_NAME is required. Set it via environment variable:
+    CRAWLER_BUCKET_NAME=your-bucket-name ./deploy.sh
+    
+This must be an existing S3 bucket that will be used for both crawler output and Bedrock KB data source."
+fi
+
 # Build environment variables for unified deployment
 ENV_VARS_ARRAY='{
     "name": "AMPLIFY_APP_ID",
@@ -653,6 +662,10 @@ ENV_VARS_ARRAY='{
   },{
     "name": "CDK_DEFAULT_ACCOUNT",
     "value": "'"$AWS_ACCOUNT_ID"'",
+    "type": "PLAINTEXT"
+  },{
+    "name": "CRAWLER_BUCKET_NAME",
+    "value": "'"$CRAWLER_BUCKET_NAME"'",
     "type": "PLAINTEXT"
   }'
 
@@ -818,6 +831,7 @@ echo "   CDK Stacks:"
 echo "     - $CRAWLER_STACK_NAME (ECS Crawler Infrastructure)"
 echo "     - $STACK_NAME (Backend Services)"
 echo "   AWS Region: $AWS_REGION"
+echo "   Crawler Bucket: $CRAWLER_BUCKET_NAME"
 echo ""
 echo "What was deployed:"
 echo "   - ECS Fargate cluster for web crawling"
@@ -838,3 +852,8 @@ echo "To trigger a crawl job:"
 echo "   aws lambda invoke --function-name AskUSDA-KBSyncHandler --payload '{\"action\":\"crawl\",\"source_url\":\"https://www.fns.usda.gov/snap\",\"max_pages\":10}' --cli-binary-format raw-in-base64-out response.json"
 echo ""
 echo "=========================================================================="
+echo ""
+echo "Usage for future deployments:"
+echo "   CRAWLER_BUCKET_NAME=$CRAWLER_BUCKET_NAME ./deploy.sh"
+echo "   CRAWLER_BUCKET_NAME=$CRAWLER_BUCKET_NAME BRANCH_NAME=feature/xyz ./deploy.sh"
+echo ""
