@@ -9,18 +9,30 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import { CrawlerStack } from './crawler-stack';
+
+export interface USDAChatbotStackProps extends cdk.StackProps {
+  /**
+   * Reference to the CrawlerStack to get ECS infrastructure values
+   */
+  crawlerStack: CrawlerStack;
+}
 
 export class USDAChatbotStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: USDAChatbotStackProps) {
     super(scope, id, props);
 
-    // ==================== Web Crawler Config (from CDK context) ====================
-    const crawlerBucketName = this.node.tryGetContext('crawlerBucketName') || 'webcrawlerstack-crawlerdatabucketea3cc496-zrasanqbdtrx';
-    const crawlerClusterArn = this.node.tryGetContext('crawlerClusterArn') || 'arn:aws:ecs:us-west-2:904233123149:cluster/web-crawler-cluster';
-    const crawlerTaskDefArn = this.node.tryGetContext('crawlerTaskDefArn') || 'arn:aws:ecs:us-west-2:904233123149:task-definition/WebCrawlerStackCrawlerTaskDef07955191:1';
-    const crawlerContainerName = this.node.tryGetContext('crawlerContainerName') || 'CrawlerContainer';
-    const crawlerSubnetIds = this.node.tryGetContext('crawlerSubnetIds') || 'subnet-0371351a29fb1aaae,subnet-071a87c9587b5c6fa';
-    const crawlerSecurityGroupId = this.node.tryGetContext('crawlerSecurityGroupId') || 'sg-02e3bb3712f4abfdb';
+    // ==================== Web Crawler Config (from CrawlerStack) ====================
+    const { crawlerStack } = props;
+    const crawlerBucketName = crawlerStack.dataBucket.bucketName;
+    const crawlerClusterArn = crawlerStack.cluster.clusterArn;
+    const crawlerTaskDefArn = crawlerStack.taskDefinition.taskDefinitionArn;
+    const crawlerContainerName = crawlerStack.containerName;
+    const crawlerSubnetIds = crawlerStack.vpc.publicSubnets.map(s => s.subnetId).join(',');
+    const crawlerSecurityGroupId = crawlerStack.securityGroup.securityGroupId;
+
+    // Add dependency to ensure crawler stack deploys first
+    this.addDependency(crawlerStack);
 
     // ==================== Amplify App ID (from CDK context) ====================
     const amplifyAppId = this.node.tryGetContext('amplifyAppId') || '';
@@ -189,15 +201,15 @@ export class USDAChatbotStack extends cdk.Stack {
       }
     }
 
-    // ==================== S3 Vectors — Data Source (ingestion-v3/) ====================
+    // ==================== S3 Vectors — Data Source (ingestion-v1/) ====================
     const dataSource = new bedrock.CfnDataSource(this, 'CrawlerS3DataSourceS3V', {
-      name: 'crawler-s3-v3',
+      name: 'crawler-s3-v1',
       knowledgeBaseId: knowledgeBase.attrKnowledgeBaseId,
       dataSourceConfiguration: {
         type: 'S3',
         s3Configuration: {
           bucketArn: crawlerBucket.bucketArn,
-          inclusionPrefixes: ['ingestion-v3/'],
+          inclusionPrefixes: ['ingestion-v1/'],
         },
       },
       vectorIngestionConfiguration: {
@@ -260,7 +272,7 @@ export class USDAChatbotStack extends cdk.Stack {
       memorySize: 1024,
       environment: {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
-        DATA_SOURCE_ID_V3: dataSource.attrDataSourceId,
+        DATA_SOURCE_ID_V1: dataSource.attrDataSourceId,
         CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_CLUSTER_ARN: crawlerClusterArn,
         CRAWLER_TASK_DEF_ARN: crawlerTaskDefArn,
@@ -499,7 +511,7 @@ export class USDAChatbotStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ConversationTableName', { value: conversationHistoryTable.tableName, description: 'DynamoDB Conversation History Table', exportName: 'AskUSDA-ConversationTable' });
     new cdk.CfnOutput(this, 'KnowledgeBaseId', { value: knowledgeBase.attrKnowledgeBaseId, description: 'Bedrock Knowledge Base ID (S3 Vectors)', exportName: 'AskUSDA-KnowledgeBaseId' });
     new cdk.CfnOutput(this, 'S3VectorBucketArn', { value: s3VectorBucket.getAtt('VectorBucketArn').toString(), description: 'S3 Vector Bucket ARN', exportName: 'AskUSDA-S3VectorBucketArn' });
-    new cdk.CfnOutput(this, 'S3DataSourceV3Id', { value: dataSource.attrDataSourceId, description: 'S3 Data Source ID', exportName: 'AskUSDA-S3DataSourceV3Id' });
+    new cdk.CfnOutput(this, 'S3DataSourceV1Id', { value: dataSource.attrDataSourceId, description: 'S3 Data Source ID', exportName: 'AskUSDA-S3DataSourceV1Id' });
     new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucketName, description: 'Web Crawler S3 Bucket', exportName: 'AskUSDA-CrawlerBucket' });
     new cdk.CfnOutput(this, 'GuardrailId', { value: guardrail.attrGuardrailId, description: 'Bedrock Guardrail ID', exportName: 'AskUSDA-GuardrailId' });
     new cdk.CfnOutput(this, 'AdminApiUrl', { value: adminApi.apiEndpoint, description: 'Admin API URL', exportName: 'AskUSDA-AdminApiUrl' });

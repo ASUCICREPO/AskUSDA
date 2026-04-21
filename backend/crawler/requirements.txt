@@ -1,0 +1,7 @@
+crawl4ai
+boto3
+pyyaml
+aiohttp
+httpx
+python-dotenv
+html2text

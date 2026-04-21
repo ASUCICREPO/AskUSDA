@@ -1,0 +1,205 @@
+# ==============================================================================
+# CRAWLER CONFIGURATION - URLs TO SCRAPE
+# ==============================================================================
+#
+# This file defines which websites/pages the crawler will scrape.
+# Each job runs independently and stores output in S3.
+#
+# HOW TO ADD A NEW URL TO CRAWL:
+# ------------------------------
+# Add a new entry under 'crawl_jobs:' with these fields:
+#
+#   - name: "unique-job-name"           # Used as job ID prefix (no spaces)
+#     source_url: "https://example.com/path"  # Starting URL
+#     max_pages: 500                    # Max pages to scrape (99999 = unlimited)
+#     max_depth: 3                      # How many link-hops from source_url
+#     scope_type: "path"                # URL filtering (see below)
+#     pdf_scope: "all"                  # PDF download scope
+#     doc_scope: "all"                  # Office doc download scope
+#     use_browser: "auto"               # Browser mode (optional)
+#
+# SCOPE TYPES:
+# ------------
+#   path       - Only URLs under same path prefix (e.g., /snap/*)
+#   host       - All URLs on same domain (e.g., all of fns.usda.gov)
+#   subdomains - Domain + all subdomains (e.g., *.usda.gov)
+#   all        - No URL filtering (follow all links)
+#   none       - Skip markdown, only download PDFs/docs
+#
+# BROWSER MODES:
+# --------------
+#   auto - Try HTTP first, switch to browser if JS detected (default)
+#   on   - Always use browser (for known JS-heavy sites)
+#   off  - Never use browser (fastest, but fails on JS sites)
+#
+# ==============================================================================
+
+crawl_jobs:
+  # --------------------------------------------------------------------------
+  # USDA Main Site
+  # --------------------------------------------------------------------------
+  - name: "usda-about"
+    source_url: "https://www.usda.gov/about-usda"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "usda-topics"
+    source_url: "https://www.usda.gov/topics"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "usda-media"
+    source_url: "https://www.usda.gov/media"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Food and Nutrition Service (FNS)
+  # --------------------------------------------------------------------------
+  - name: "fns-snap"
+    source_url: "https://www.fns.usda.gov/snap"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "fns-wic"
+    source_url: "https://www.fns.usda.gov/wic"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "fns-school-meals"
+    source_url: "https://www.fns.usda.gov/school-meals"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Food Safety and Inspection Service (FSIS)
+  # --------------------------------------------------------------------------
+  - name: "fsis-food-safety"
+    source_url: "https://www.fsis.usda.gov/food-safety"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Rural Development (RD)
+  # --------------------------------------------------------------------------
+  - name: "rd-programs"
+    source_url: "https://www.rd.usda.gov/programs-services"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Farmers.gov
+  # --------------------------------------------------------------------------
+  - name: "farmers-business"
+    source_url: "https://www.farmers.gov/your-business"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "farmers-protection"
+    source_url: "https://www.farmers.gov/protection-recovery"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Natural Resources Conservation Service (NRCS)
+  # --------------------------------------------------------------------------
+  - name: "nrcs-programs"
+    source_url: "https://www.nrcs.usda.gov/programs-initiatives"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  - name: "nrcs-conservation"
+    source_url: "https://www.nrcs.usda.gov/conservation-basics"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Forest Service (FS)
+  # --------------------------------------------------------------------------
+  - name: "fs-visit"
+    source_url: "https://www.fs.usda.gov/visit"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Animal and Plant Health Inspection Service (APHIS)
+  # --------------------------------------------------------------------------
+  - name: "aphis-pet-travel"
+    source_url: "https://www.aphis.usda.gov/pet-travel"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # National Agricultural Statistics Service (NASS)
+  # --------------------------------------------------------------------------
+  - name: "nass"
+    source_url: "https://www.nass.usda.gov/"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "host"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # Economic Research Service (ERS)
+  # --------------------------------------------------------------------------
+  - name: "ers-topics"
+    source_url: "https://www.ers.usda.gov/topics"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "path"
+    pdf_scope: "all"
+    doc_scope: "all"
+
+  # --------------------------------------------------------------------------
+  # USA.gov (General Government Info)
+  # --------------------------------------------------------------------------
+  - name: "usa-gov"
+    source_url: "https://www.usa.gov/"
+    max_pages: 99999
+    max_depth: 2
+    scope_type: "host"
+    pdf_scope: "all"
+    doc_scope: "all"
