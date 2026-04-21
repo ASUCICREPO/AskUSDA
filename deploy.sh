@@ -16,17 +16,20 @@ NC='\033[0m' # No Color
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 PROJECT_NAME="askusda-${TIMESTAMP}"
 STACK_NAME="AskUSDA-Backend"
+CRAWLER_STACK_NAME="AskUSDA-Crawler"
 AWS_REGION=${AWS_REGION:-$(aws configure get region || echo "us-east-1")}
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 AMPLIFY_APP_NAME="AskUSDA-Frontend"
 CODEBUILD_PROJECT_NAME="${PROJECT_NAME}-deployment"
 REPOSITORY_URL="https://github.com/ASUCICREPO/AskUSDA.git" # IMPORTANT: repo url from which codebuild runs
+BRANCH_NAME="${BRANCH_NAME:-master}" # Branch to deploy (override with BRANCH_NAME env var)
 
 # Global variables
 WEBSOCKET_URL=""
 AMPLIFY_APP_ID=""
 AMPLIFY_URL=""
 ROLE_ARN=""
+CRAWLER_BUCKET_NAME=""
 
 # Function to print colored output
 print_status() {
@@ -109,6 +112,7 @@ else
               ],
               "Resource": [
                   "arn:aws:cloudformation:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':stack/AskUSDA-Backend/*",
+                  "arn:aws:cloudformation:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':stack/AskUSDA-Crawler/*",
                   "arn:aws:cloudformation:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':stack/CDKToolkit/*"
               ]
           },
@@ -368,7 +372,8 @@ else
               ],
               "Resource": [
                   "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/aws/lambda/AskUSDA-*",
-                  "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/aws/codebuild/*"
+                  "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/aws/codebuild/*",
+                  "arn:aws:logs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':log-group:/ecs/askusda-*"
               ]
           }
       ]
@@ -439,6 +444,113 @@ else
       --role-name "$ROLE_NAME" \
       --policy-name "AIAndSearchPolicy" \
       --policy-document "$AI_POLICY"
+
+    # --- Policy 5: ECS & VPC (for Crawler Stack) ---
+    ECS_VPC_POLICY='{
+      "Version": "2012-10-17",
+      "Statement": [
+          {
+              "Sid": "ECSManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "ecs:CreateCluster",
+                  "ecs:DeleteCluster",
+                  "ecs:DescribeClusters",
+                  "ecs:RegisterTaskDefinition",
+                  "ecs:DeregisterTaskDefinition",
+                  "ecs:DescribeTaskDefinition",
+                  "ecs:ListTaskDefinitions",
+                  "ecs:RunTask",
+                  "ecs:StopTask",
+                  "ecs:DescribeTasks",
+                  "ecs:ListTasks",
+                  "ecs:TagResource",
+                  "ecs:UntagResource"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "VPCManagement",
+              "Effect": "Allow",
+              "Action": [
+                  "ec2:CreateVpc",
+                  "ec2:DeleteVpc",
+                  "ec2:DescribeVpcs",
+                  "ec2:ModifyVpcAttribute",
+                  "ec2:CreateSubnet",
+                  "ec2:DeleteSubnet",
+                  "ec2:DescribeSubnets",
+                  "ec2:CreateInternetGateway",
+                  "ec2:DeleteInternetGateway",
+                  "ec2:AttachInternetGateway",
+                  "ec2:DetachInternetGateway",
+                  "ec2:DescribeInternetGateways",
+                  "ec2:CreateRouteTable",
+                  "ec2:DeleteRouteTable",
+                  "ec2:AssociateRouteTable",
+                  "ec2:DisassociateRouteTable",
+                  "ec2:DescribeRouteTables",
+                  "ec2:CreateRoute",
+                  "ec2:DeleteRoute",
+                  "ec2:CreateSecurityGroup",
+                  "ec2:DeleteSecurityGroup",
+                  "ec2:DescribeSecurityGroups",
+                  "ec2:AuthorizeSecurityGroupIngress",
+                  "ec2:AuthorizeSecurityGroupEgress",
+                  "ec2:RevokeSecurityGroupIngress",
+                  "ec2:RevokeSecurityGroupEgress",
+                  "ec2:CreateNatGateway",
+                  "ec2:DeleteNatGateway",
+                  "ec2:DescribeNatGateways",
+                  "ec2:AllocateAddress",
+                  "ec2:ReleaseAddress",
+                  "ec2:DescribeAddresses",
+                  "ec2:CreateTags",
+                  "ec2:DeleteTags",
+                  "ec2:DescribeTags",
+                  "ec2:DescribeAvailabilityZones",
+                  "ec2:DescribeAccountAttributes",
+                  "ec2:ModifySubnetAttribute"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "S3CrawlerBucket",
+              "Effect": "Allow",
+              "Action": [
+                  "s3:CreateBucket",
+                  "s3:DeleteBucket",
+                  "s3:GetBucketLocation",
+                  "s3:GetBucketPolicy",
+                  "s3:PutBucketPolicy",
+                  "s3:DeleteBucketPolicy",
+                  "s3:ListBucket",
+                  "s3:GetObject",
+                  "s3:PutObject",
+                  "s3:DeleteObject",
+                  "s3:PutBucketVersioning",
+                  "s3:PutEncryptionConfiguration",
+                  "s3:PutLifecycleConfiguration",
+                  "s3:PutBucketPublicAccessBlock",
+                  "s3:GetBucketVersioning",
+                  "s3:GetEncryptionConfiguration",
+                  "s3:GetLifecycleConfiguration",
+                  "s3:GetBucketPublicAccessBlock"
+              ],
+              "Resource": [
+                  "arn:aws:s3:::askusda-crawler-*",
+                  "arn:aws:s3:::askusda-crawler-*/*",
+                  "arn:aws:s3:::webcrawlerstack-*",
+                  "arn:aws:s3:::webcrawlerstack-*/*"
+              ]
+          }
+      ]
+    }'
+
+    aws iam put-role-policy \
+      --role-name "$ROLE_NAME" \
+      --policy-name "ECSAndVPCPolicy" \
+      --policy-document "$ECS_VPC_POLICY"
 
     print_success "IAM role created"
     print_status "Waiting for IAM role to propagate for 10 seconds..."
@@ -562,13 +674,12 @@ SOURCE='{
 }'
 
 ARTIFACTS='{"type":"NO_ARTIFACTS"}'
-SOURCE_VERSION="master"
 
-print_status "Creating unified CodeBuild project '$CODEBUILD_PROJECT_NAME'..."
+print_status "Creating unified CodeBuild project '$CODEBUILD_PROJECT_NAME' (branch: $BRANCH_NAME)..."
 AWS_PAGER="" aws codebuild create-project \
   --name "$CODEBUILD_PROJECT_NAME" \
   --source "$SOURCE" \
-  --source-version "$SOURCE_VERSION" \
+  --source-version "$BRANCH_NAME" \
   --artifacts "$ARTIFACTS" \
   --environment "$ENVIRONMENT" \
   --service-role "$ROLE_ARN" \
@@ -703,10 +814,14 @@ echo "==========================================================================
 echo "                         DEPLOYMENT SUMMARY                               "
 echo "=========================================================================="
 echo ""
-echo "   CDK Stack: $STACK_NAME"
+echo "   CDK Stacks:"
+echo "     - $CRAWLER_STACK_NAME (ECS Crawler Infrastructure)"
+echo "     - $STACK_NAME (Backend Services)"
 echo "   AWS Region: $AWS_REGION"
 echo ""
 echo "What was deployed:"
+echo "   - ECS Fargate cluster for web crawling"
+echo "   - VPC with public subnets for crawler tasks"
 echo "   - CDK backend infrastructure via CodeBuild"
 echo "   - WebSocket API Gateway with Lambda functions"
 echo "   - Bedrock Knowledge Base with Web Crawler"
@@ -718,5 +833,8 @@ echo "   - Frontend built and deployed to Amplify via CodeBuild"
 echo ""
 echo "To retrieve deployment URLs, run:"
 echo "   aws cloudformation describe-stacks --stack-name $STACK_NAME --query 'Stacks[0].Outputs' --output table --region $AWS_REGION"
+echo ""
+echo "To trigger a crawl job:"
+echo "   aws lambda invoke --function-name AskUSDA-KBSyncHandler --payload '{\"action\":\"crawl\",\"source_url\":\"https://www.fns.usda.gov/snap\",\"max_pages\":10}' --cli-binary-format raw-in-base64-out response.json"
 echo ""
 echo "=========================================================================="

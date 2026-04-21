@@ -7,7 +7,7 @@ const ecsClient = new ECSClient({ region: process.env.CRAWLER_REGION || 'us-west
 const s3Client = new S3Client({ region: process.env.CRAWLER_REGION || 'us-west-2' });
 
 const BUCKET = process.env.CRAWLER_BUCKET;
-const INGESTION_PREFIX = 'ingestion-v3/';
+const INGESTION_PREFIX = 'ingestion-v1/';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB — Bedrock's hard limit
 
 // Crawler infrastructure files that should never be ingested
@@ -262,20 +262,16 @@ async function processDocs(jobPrefix, seen, stats) {
   } while (token);
 }
 
-// Trigger ECS crawler task
-async function triggerCrawl(event) {
-  const url = event.url || 'https://www.usda.gov/about-food/';
-  const maxPages = event.maxPages || '500';
-  const scopeType = event.scopeType || 'host';
-  const jobId = event.jobId || '';
-
+// Trigger ECS crawler task for a single URL
+async function triggerSingleCrawl(url, maxPages, scopeType, jobId, pdfScope, docScope, maxDepth) {
   const overrides = [
     { name: 'SEED_URL', value: url },
-    { name: 'MAX_PAGES', value: String(maxPages) },
-    { name: 'SCOPE_TYPE', value: scopeType },
-    { name: 'USE_BROWSER', value: 'on' },
-    { name: 'PDF_SCOPE', value: 'all' },
-    { name: 'DOC_SCOPE', value: 'all' },
+    { name: 'MAX_PAGES', value: String(maxPages || 99999) },
+    { name: 'SCOPE_TYPE', value: scopeType || 'path' },
+    { name: 'USE_BROWSER', value: 'auto' },
+    { name: 'PDF_SCOPE', value: pdfScope || 'all' },
+    { name: 'DOC_SCOPE', value: docScope || 'all' },
+    { name: 'MAX_DEPTH', value: String(maxDepth || 2) },
   ];
   if (jobId) overrides.push({ name: 'JOB_ID', value: jobId });
 
@@ -301,16 +297,76 @@ async function triggerCrawl(event) {
   }));
 
   const taskArn = resp.tasks?.[0]?.taskArn || 'unknown';
-  console.log('Crawl task started:', taskArn);
-  return { status: 'crawl_started', taskArn, url };
+  return { taskArn, url, jobId };
+}
+
+// Trigger ECS crawler task (single URL - legacy)
+async function triggerCrawl(event) {
+  const url = event.url || 'https://www.usda.gov/about-food/';
+  const maxPages = event.maxPages || '500';
+  const scopeType = event.scopeType || 'host';
+  const jobId = event.jobId || '';
+
+  const result = await triggerSingleCrawl(url, maxPages, scopeType, jobId, 'all', 'all', 2);
+  console.log('Crawl task started:', result.taskArn);
+  return { status: 'crawl_started', ...result };
+}
+
+// Trigger batch crawl - ONE ECS TASK PER URL (parallel)
+async function triggerBatchCrawl(event) {
+  const jobs = event.jobs || [];
+  
+  if (!jobs.length) {
+    return { status: 'error', message: 'No jobs provided. Pass jobs array with {name, source_url, max_pages, max_depth, scope_type, pdf_scope, doc_scope}' };
+  }
+
+  console.log(`[BATCH] Starting ${jobs.length} parallel crawl tasks...`);
+  
+  // Launch all tasks in parallel
+  const results = await Promise.all(
+    jobs.map(job => 
+      triggerSingleCrawl(
+        job.source_url,
+        job.max_pages || 99999,
+        job.scope_type || 'path',
+        job.name || '',
+        job.pdf_scope || 'all',
+        job.doc_scope || 'all',
+        job.max_depth || 2
+      ).catch(err => ({ error: err.message, url: job.source_url, jobId: job.name }))
+    )
+  );
+
+  const succeeded = results.filter(r => r.taskArn && r.taskArn !== 'unknown');
+  const failed = results.filter(r => r.error || r.taskArn === 'unknown');
+
+  console.log(`[BATCH] Launched ${succeeded.length}/${jobs.length} tasks`);
+  if (failed.length) {
+    console.warn('[BATCH] Failed tasks:', JSON.stringify(failed));
+  }
+
+  return {
+    status: 'batch_started',
+    total: jobs.length,
+    succeeded: succeeded.length,
+    failed: failed.length,
+    tasks: results,
+  };
 }
 
 exports.handler = async (event) => {
   console.log('Event:', JSON.stringify(event, null, 2));
   const action = event.action || 'ingest';
 
+  // Single URL crawl
   if (action === 'crawl') {
     return triggerCrawl(event);
+  }
+
+  // Batch crawl - ONE ECS TASK PER URL (parallel)
+  // Pass: { action: "crawl_batch", jobs: [{name, source_url, max_pages, max_depth, scope_type, pdf_scope, doc_scope}, ...] }
+  if (action === 'crawl_batch') {
+    return triggerBatchCrawl(event);
   }
 
   if (action === 'prepare') {
@@ -318,13 +374,13 @@ exports.handler = async (event) => {
     return { status: 'prepare_complete', ...result };
   }
 
-  // Default: ingest = prepare + start Bedrock ingestion on the v2 data source (default parsing).
+  // Default: ingest = prepare + start Bedrock ingestion on the v1 data source.
   // Default parsing has no per-job file limit, so all files are processed in one go.
   const prepResult = await prepareIngestion();
   console.log('[INGEST] Preparation result:', prepResult);
 
   const knowledgeBaseId = process.env.KNOWLEDGE_BASE_ID;
-  const dataSourceId = process.env.DATA_SOURCE_ID_V3;
+  const dataSourceId = process.env.DATA_SOURCE_ID_V1;
 
   console.log('[INGEST] Starting ingestion for data source:', dataSourceId);
   const response = await bedrockClient.send(new StartIngestionJobCommand({ knowledgeBaseId, dataSourceId }));
