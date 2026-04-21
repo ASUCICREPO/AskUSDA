@@ -642,14 +642,6 @@ print_success "Amplify policy attached"
 # --- Phase 3: Create Unified CodeBuild Project ---
 print_codebuild "🏗️ Phase 3: Creating Unified CodeBuild Project..."
 
-# Validate required CRAWLER_BUCKET_NAME
-if [ -z "$CRAWLER_BUCKET_NAME" ]; then
-    print_error "CRAWLER_BUCKET_NAME is required. Set it via environment variable:
-    CRAWLER_BUCKET_NAME=your-bucket-name ./deploy.sh
-    
-This must be an existing S3 bucket that will be used for both crawler output and Bedrock KB data source."
-fi
-
 # Build environment variables for unified deployment
 ENV_VARS_ARRAY='{
     "name": "AMPLIFY_APP_ID",
@@ -663,11 +655,16 @@ ENV_VARS_ARRAY='{
     "name": "CDK_DEFAULT_ACCOUNT",
     "value": "'"$AWS_ACCOUNT_ID"'",
     "type": "PLAINTEXT"
-  },{
+  }'
+
+# Add optional crawler bucket name if provided
+if [ -n "$CRAWLER_BUCKET_NAME" ]; then
+  ENV_VARS_ARRAY="$ENV_VARS_ARRAY"',{
     "name": "CRAWLER_BUCKET_NAME",
     "value": "'"$CRAWLER_BUCKET_NAME"'",
     "type": "PLAINTEXT"
   }'
+fi
 
 ENVIRONMENT=$(cat <<EOF
 {
@@ -831,7 +828,11 @@ echo "   CDK Stacks:"
 echo "     - $CRAWLER_STACK_NAME (ECS Crawler Infrastructure)"
 echo "     - $STACK_NAME (Backend Services)"
 echo "   AWS Region: $AWS_REGION"
-echo "   Crawler Bucket: $CRAWLER_BUCKET_NAME"
+if [ -n "$CRAWLER_BUCKET_NAME" ]; then
+  echo "   Crawler Bucket: $CRAWLER_BUCKET_NAME (existing)"
+else
+  echo "   Crawler Bucket: askusda-crawler-$AWS_ACCOUNT_ID-$AWS_REGION (created)"
+fi
 echo ""
 echo "What was deployed:"
 echo "   - ECS Fargate cluster for web crawling"
@@ -854,6 +855,7 @@ echo ""
 echo "=========================================================================="
 echo ""
 echo "Usage for future deployments:"
-echo "   CRAWLER_BUCKET_NAME=$CRAWLER_BUCKET_NAME ./deploy.sh"
-echo "   CRAWLER_BUCKET_NAME=$CRAWLER_BUCKET_NAME BRANCH_NAME=feature/xyz ./deploy.sh"
+echo "   ./deploy.sh                                    # Creates new bucket"
+echo "   CRAWLER_BUCKET_NAME=existing-bucket ./deploy.sh  # Uses existing bucket"
+echo "   BRANCH_NAME=feature/xyz ./deploy.sh            # Deploy from branch"
 echo ""

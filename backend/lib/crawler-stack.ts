@@ -16,13 +16,13 @@ import { Construct } from "constructs";
 
 export interface CrawlerStackProps extends StackProps {
   /**
-   * REQUIRED: The S3 bucket name where crawler stores data.
-   * This MUST be the same bucket used as the Bedrock Knowledge Base data source.
+   * Optional: Existing S3 bucket name to use for crawler data.
+   * If not provided, a new bucket will be created.
    * 
    * The crawler writes to: s3://{bucket}/jobs/{job_id}/
    * The KB sync Lambda copies to: s3://{bucket}/ingestion-v1/
    */
-  crawlerBucketName: string;
+  crawlerBucketName?: string;
 }
 
 export class CrawlerStack extends Stack {
@@ -33,19 +33,31 @@ export class CrawlerStack extends Stack {
   public readonly securityGroup: ec2.SecurityGroup;
   public readonly vpc: ec2.Vpc;
 
-  constructor(scope: Construct, id: string, props: CrawlerStackProps) {
+  constructor(scope: Construct, id: string, props?: CrawlerStackProps) {
     super(scope, id, props);
 
     // ==========================================
     // S3 Bucket for Crawled Data
-    // IMPORTANT: This must match the Bedrock KB data source bucket
+    // Creates new bucket or uses existing one
     // ==========================================
 
-    this.dataBucket = s3.Bucket.fromBucketName(
-      this, 
-      "CrawlerDataBucket", 
-      props.crawlerBucketName
-    );
+    if (props?.crawlerBucketName) {
+      // Use existing bucket
+      this.dataBucket = s3.Bucket.fromBucketName(
+        this, 
+        "CrawlerDataBucket", 
+        props.crawlerBucketName
+      );
+    } else {
+      // Create new bucket
+      this.dataBucket = new s3.Bucket(this, "CrawlerDataBucket", {
+        bucketName: `askusda-crawler-${this.account}-${this.region}`,
+        removalPolicy: RemovalPolicy.RETAIN,
+        versioned: true,
+        encryption: s3.BucketEncryption.S3_MANAGED,
+        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      });
+    }
 
     // ==========================================
     // VPC for ECS Tasks

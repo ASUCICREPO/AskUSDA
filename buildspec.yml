@@ -27,7 +27,12 @@ phases:
   build:
     commands:
       - echo "Deploying CDK stacks (Crawler + Backend)..."
-      - cdk deploy --all --require-approval never --context amplifyAppId=$AMPLIFY_APP_ID --context crawlerBucketName=$CRAWLER_BUCKET_NAME
+      - |
+        CDK_CONTEXT="--context amplifyAppId=$AMPLIFY_APP_ID"
+        if [ -n "$CRAWLER_BUCKET_NAME" ]; then
+          CDK_CONTEXT="$CDK_CONTEXT --context crawlerBucketName=$CRAWLER_BUCKET_NAME"
+        fi
+        cdk deploy --all --require-approval never $CDK_CONTEXT
       - echo "CDK deployment complete."
       - echo "Extracting stack outputs..."
       - cd ..
