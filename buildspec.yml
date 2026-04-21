@@ -88,4 +88,20 @@ phases:
         fi
       - echo "Starting deployment..."
       - aws amplify start-deployment --app-id $AMPLIFY_APP_ID --branch-name master --job-id $JOB_ID --region $AWS_DEFAULT_REGION
+      - echo "Frontend deployment complete!"
+      - echo ""
+      - echo "=== AUTO-CRAWL (Initial Data Ingestion) ==="
+      - echo "Triggering initial crawl to populate Knowledge Base..."
+      - |
+        # Trigger a small initial crawl (SNAP pages) to seed the Knowledge Base
+        aws lambda invoke \
+          --function-name AskUSDA-KBSyncHandler \
+          --invocation-type Event \
+          --payload '{"action":"crawl","source_url":"https://www.fns.usda.gov/snap","max_pages":50,"max_depth":2,"scope_type":"path","name":"initial-snap"}' \
+          --cli-binary-format raw-in-base64-out \
+          --region $AWS_DEFAULT_REGION \
+          /tmp/crawl-response.json || echo "Warning: Initial crawl trigger failed (non-blocking)"
+      - echo "Initial crawl triggered (runs async in background)"
+      - echo "Crawl will auto-trigger ingestion when complete"
+      - echo ""
       - echo "Complete deployment finished successfully!"

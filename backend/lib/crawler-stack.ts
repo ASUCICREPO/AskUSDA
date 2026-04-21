@@ -106,6 +106,13 @@ export class CrawlerStack extends Stack {
 
     this.dataBucket.grantReadWrite(taskRole, "jobs/*");
 
+    // Allow ECS task to invoke the ingestion Lambda after crawl completes
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ["lambda:InvokeFunction"],
+      resources: [`arn:aws:lambda:${this.region}:${this.account}:function:AskUSDA-KBSyncHandler`],
+    }));
+
     // ==========================================
     // ECS Task Execution Role
     // ==========================================
@@ -176,6 +183,7 @@ export class CrawlerStack extends Stack {
         MAX_DEPTH: "2",
         MAX_PAGES: "99999",
         MAX_CONCURRENT: "20",
+        INGEST_LAMBDA_FUNCTION: "AskUSDA-KBSyncHandler",  // Auto-trigger ingestion after crawl
       },
       stopTimeout: Duration.seconds(120),
     });

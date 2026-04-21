@@ -44,6 +44,13 @@ from urllib.parse import urlparse, urlunparse, urljoin
 import httpx
 import yaml
 
+# AWS SDK for triggering ingestion after crawl
+try:
+    import boto3
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
+
 from .config import (
     USE_S3, S3_BUCKET, MAX_CONCURRENT,
     SEED_URL, JOB_ID, SCOPE_TYPE, PDF_SCOPE, DOC_SCOPE,
@@ -927,6 +934,26 @@ class CrawlOrchestrator:
                 print(f"  Browser:   activated (JS rendering)")
             print(f"  Duration:  {duration / 60:.1f} minutes")
             print("=" * 70)
+
+            # ---- AUTO-TRIGGER INGESTION ----
+            # If running in ECS with Lambda function name set, trigger ingestion automatically
+            lambda_function = os.getenv("INGEST_LAMBDA_FUNCTION")
+            if lambda_function and HAS_BOTO3 and USE_S3:
+                print(f"\n[AUTO-INGEST] Triggering ingestion via Lambda: {lambda_function}")
+                try:
+                    lambda_client = boto3.client("lambda", region_name=os.getenv("AWS_DEFAULT_REGION", "us-west-2"))
+                    response = lambda_client.invoke(
+                        FunctionName=lambda_function,
+                        InvocationType="Event",  # Async invocation
+                        Payload=json.dumps({"action": "ingest"}).encode(),
+                    )
+                    print(f"  [AUTO-INGEST] Lambda invoked (StatusCode: {response.get('StatusCode')})")
+                except Exception as e:
+                    print(f"  [AUTO-INGEST] Failed to invoke Lambda: {e}")
+            elif lambda_function and not HAS_BOTO3:
+                print(f"\n[AUTO-INGEST] SKIPPED - boto3 not available")
+            elif lambda_function and not USE_S3:
+                print(f"\n[AUTO-INGEST] SKIPPED - not using S3 storage")
 
             return summary
 
