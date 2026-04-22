@@ -100,6 +100,7 @@ else
                   "cloudformation:DeleteStack",
                   "cloudformation:DescribeStacks",
                   "cloudformation:DescribeStackEvents",
+                  "cloudformation:DescribeEvents",
                   "cloudformation:DescribeStackResources",
                   "cloudformation:GetTemplate",
                   "cloudformation:GetTemplateSummary",
