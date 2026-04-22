@@ -676,8 +676,8 @@ fi
 
 ENVIRONMENT=$(cat <<EOF
 {
-  "type": "ARM_CONTAINER",
-  "image": "aws/codebuild/amazonlinux-aarch64-standard:3.0",
+  "type": "LINUX_CONTAINER",
+  "image": "aws/codebuild/amazonlinux-x86_64-standard:5.0",
   "computeType": "BUILD_GENERAL1_LARGE",
   "privilegedMode": true,
   "environmentVariables": [$ENV_VARS_ARRAY]
