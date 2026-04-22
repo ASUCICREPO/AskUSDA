@@ -114,7 +114,7 @@ export class USDAChatbotStack extends cdk.Stack {
         's3vectors:QueryVectors',
         's3vectors:ListVectors',
       ],
-      resources: [`arn:aws:s3vectors:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:vector-bucket/askusda-vectors/*`],
+      resources: [`arn:aws:s3vectors:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:bucket/askusda-vectors/*`],
     }));
 
     // ==================== S3 Bucket Reference (Web Crawler Output) ====================
