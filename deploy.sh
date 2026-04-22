@@ -338,23 +338,6 @@ else
               "Resource": "arn:aws:cognito-idp:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':userpool/*"
           },
           {
-              "Sid": "EventBridgeManagement",
-              "Effect": "Allow",
-              "Action": [
-                  "events:PutRule",
-                  "events:DeleteRule",
-                  "events:DescribeRule",
-                  "events:EnableRule",
-                  "events:DisableRule",
-                  "events:PutTargets",
-                  "events:RemoveTargets",
-                  "events:ListTargetsByRule",
-                  "events:TagResource",
-                  "events:UntagResource"
-              ],
-              "Resource": "arn:aws:events:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':rule/AskUSDA-*"
-          },
-          {
               "Sid": "CloudWatchLogsManagement",
               "Effect": "Allow",
               "Action": [
@@ -390,7 +373,7 @@ else
       "Version": "2012-10-17",
       "Statement": [
           {
-              "Sid": "BedrockKnowledgeBase",
+              "Sid": "BedrockKBManagement",
               "Effect": "Allow",
               "Action": [
                   "bedrock:CreateKnowledgeBase",
@@ -401,6 +384,18 @@ else
                   "bedrock:DeleteDataSource",
                   "bedrock:GetDataSource",
                   "bedrock:UpdateDataSource",
+                  "bedrock:TagResource",
+                  "bedrock:UntagResource",
+                  "bedrock:ListTagsForResource"
+              ],
+              "Resource": [
+                  "arn:aws:bedrock:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':knowledge-base/*"
+              ]
+          },
+          {
+              "Sid": "BedrockGuardrailManagement",
+              "Effect": "Allow",
+              "Action": [
                   "bedrock:CreateGuardrail",
                   "bedrock:DeleteGuardrail",
                   "bedrock:GetGuardrail",
@@ -409,14 +404,23 @@ else
                   "bedrock:CreateGuardrailVersion",
                   "bedrock:TagResource",
                   "bedrock:UntagResource",
-                  "bedrock:ListTagsForResource",
+                  "bedrock:ListTagsForResource"
+              ],
+              "Resource": [
+                  "arn:aws:bedrock:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':guardrail/*"
+              ]
+          },
+          {
+              "Sid": "BedrockFoundationModelRead",
+              "Effect": "Allow",
+              "Action": [
                   "bedrock:GetFoundationModel",
                   "bedrock:ListFoundationModels"
               ],
               "Resource": "*"
           },
           {
-              "Sid": "S3Vectors",
+              "Sid": "S3VectorsManagement",
               "Effect": "Allow",
               "Action": [
                   "s3vectors:CreateVectorBucket",
@@ -427,11 +431,6 @@ else
                   "s3vectors:DeleteIndex",
                   "s3vectors:GetIndex",
                   "s3vectors:ListIndexes",
-                  "s3vectors:PutVectors",
-                  "s3vectors:GetVectors",
-                  "s3vectors:DeleteVectors",
-                  "s3vectors:QueryVectors",
-                  "s3vectors:ListVectors",
                   "s3vectors:TagResource",
                   "s3vectors:UntagResource",
                   "s3vectors:ListTagsForResource"
@@ -451,22 +450,36 @@ else
       "Version": "2012-10-17",
       "Statement": [
           {
-              "Sid": "ECSManagement",
+              "Sid": "ECSClusterManagement",
               "Effect": "Allow",
               "Action": [
                   "ecs:CreateCluster",
                   "ecs:DeleteCluster",
                   "ecs:DescribeClusters",
+                  "ecs:TagResource",
+                  "ecs:UntagResource",
+                  "ecs:PutClusterCapacityProviders",
+                  "ecs:UpdateClusterSettings"
+              ],
+              "Resource": "arn:aws:ecs:'"$AWS_REGION"':'"$AWS_ACCOUNT_ID"':cluster/askusda-*"
+          },
+          {
+              "Sid": "ECSTaskDefinitionManagement",
+              "Effect": "Allow",
+              "Action": [
                   "ecs:RegisterTaskDefinition",
                   "ecs:DeregisterTaskDefinition",
                   "ecs:DescribeTaskDefinition",
                   "ecs:ListTaskDefinitions",
-                  "ecs:RunTask",
-                  "ecs:StopTask",
-                  "ecs:DescribeTasks",
-                  "ecs:ListTasks",
-                  "ecs:TagResource",
-                  "ecs:UntagResource"
+                  "ecs:TagResource"
+              ],
+              "Resource": "*"
+          },
+          {
+              "Sid": "ECSContainerInsights",
+              "Effect": "Allow",
+              "Action": [
+                  "ecs:PutAccountSetting"
               ],
               "Resource": "*"
           },
@@ -500,12 +513,6 @@ else
                   "ec2:AuthorizeSecurityGroupEgress",
                   "ec2:RevokeSecurityGroupIngress",
                   "ec2:RevokeSecurityGroupEgress",
-                  "ec2:CreateNatGateway",
-                  "ec2:DeleteNatGateway",
-                  "ec2:DescribeNatGateways",
-                  "ec2:AllocateAddress",
-                  "ec2:ReleaseAddress",
-                  "ec2:DescribeAddresses",
                   "ec2:CreateTags",
                   "ec2:DeleteTags",
                   "ec2:DescribeTags",

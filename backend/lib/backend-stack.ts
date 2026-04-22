@@ -100,18 +100,6 @@ export class USDAChatbotStack extends cdk.Stack {
 
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:ListFoundationModels', 'bedrock:GetFoundationModel'],
-      resources: ['*'],
-    }));
-
-    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['bedrock:Rerank'],
-      resources: ['*'],
-    }));
-
-    knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel'],
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
     }));
@@ -119,7 +107,6 @@ export class USDAChatbotStack extends cdk.Stack {
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: [
-        's3vectors:CreateIndex',
         's3vectors:GetIndex',
         's3vectors:PutVectors',
         's3vectors:GetVectors',
@@ -127,7 +114,7 @@ export class USDAChatbotStack extends cdk.Stack {
         's3vectors:QueryVectors',
         's3vectors:ListVectors',
       ],
-      resources: ['*'],
+      resources: [`arn:aws:s3vectors:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:vector-bucket/askusda-vectors/*`],
     }));
 
     // ==================== S3 Bucket Reference (Web Crawler Output) ====================
@@ -235,7 +222,7 @@ export class USDAChatbotStack extends cdk.Stack {
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:StartIngestionJob'],
-      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
+      resources: [knowledgeBase.attrKnowledgeBaseArn],
     }));
 
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
@@ -250,15 +237,18 @@ export class USDAChatbotStack extends cdk.Stack {
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['ecs:RunTask'],
-      resources: ['*'],
+      resources: [crawlerTaskDefArn],
     }));
 
     kbSyncLambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['iam:PassRole'],
-      resources: ['*'],
+      resources: [
+        crawlerStack.taskDefinition.taskRole.roleArn,
+        crawlerStack.taskDefinition.executionRole!.roleArn,
+      ],
       conditions: {
-        StringLike: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
+        StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
       },
     }));
 
@@ -307,27 +297,21 @@ export class USDAChatbotStack extends cdk.Stack {
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
       resources: [
-        'arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0',
-        'arn:aws:bedrock:*::foundation-model/amazon.titan-embed-text-v2:0',
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.nova-pro-v1:0`,
+        `arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.titan-embed-text-v2:0`,
       ],
     }));
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream', 'bedrock:GetInferenceProfile'],
-      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/*`],
+      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`],
     }));
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock:Retrieve'],
-      resources: [`arn:aws:bedrock:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:knowledge-base/*`],
-    }));
-
-    lambdaRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['bedrock:Rerank'],
-      resources: ['*'],
+      resources: [knowledgeBase.attrKnowledgeBaseArn],
     }));
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
@@ -336,11 +320,7 @@ export class USDAChatbotStack extends cdk.Stack {
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
     }));
 
-    lambdaRole.addToPolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['execute-api:ManageConnections'],
-      resources: [`arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:*/*`],
-    }));
+    // execute-api:ManageConnections is scoped below after WebSocket API creation
 
     // ==================== WebSocket Lambda ====================
     const webSocketHandler = new lambda.Function(this, 'WebSocketHandler', {
@@ -395,6 +375,12 @@ export class USDAChatbotStack extends cdk.Stack {
     });
 
     webSocketHandler.addEnvironment('WEBSOCKET_ENDPOINT', webSocketStage.callbackUrl);
+
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['execute-api:ManageConnections'],
+      resources: [`arn:aws:execute-api:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:${webSocketApi.apiId}/prod/POST/@connections/*`],
+    }));
 
     // ==================== Bedrock Guardrail ====================
     const guardrail = new bedrock.CfnGuardrail(this, 'USDAGuardrail', {
