@@ -51,7 +51,7 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
 
   // Check for existing session on mount
   useEffect(() => {
-    const storedUser = localStorage.getItem('adminUser');
+    const storedUser = sessionStorage.getItem('adminUser');
     if (storedUser) {
       try {
         const parsed = JSON.parse(storedUser);
@@ -60,10 +60,10 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
           setUser(parsed);
         } else {
           // Token expired, clear storage
-          localStorage.removeItem('adminUser');
+          sessionStorage.removeItem('adminUser');
         }
       } catch {
-        localStorage.removeItem('adminUser');
+        sessionStorage.removeItem('adminUser');
       }
     }
     setIsLoading(false);
@@ -116,7 +116,7 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
           idToken: authResult.IdToken,
         };
         setUser(adminUser);
-        localStorage.setItem('adminUser', JSON.stringify(adminUser));
+        sessionStorage.setItem('adminUser', JSON.stringify(adminUser));
         return { success: true };
       }
 
@@ -164,7 +164,7 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
           idToken: authResult.IdToken,
         };
         setUser(adminUser);
-        localStorage.setItem('adminUser', JSON.stringify(adminUser));
+        sessionStorage.setItem('adminUser', JSON.stringify(adminUser));
         setPendingSession(null);
         setPendingUsername(null);
         return { success: true };
@@ -179,7 +179,7 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
 
   const signOut = () => {
     setUser(null);
-    localStorage.removeItem('adminUser');
+    sessionStorage.removeItem('adminUser');
   };
 
   return (

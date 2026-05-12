@@ -430,6 +430,10 @@ export class USDAChatbotStack extends cdk.Stack {
       preventUserExistenceErrors: true,
     });
 
+    // Pass Cognito config to WebSocket handler for token validation
+    webSocketHandler.addEnvironment('COGNITO_USER_POOL_ID', adminUserPool.userPoolId);
+    webSocketHandler.addEnvironment('COGNITO_CLIENT_ID', adminAppClient.userPoolClientId);
+
     // ==================== Admin API Lambda ====================
     const adminLambdaRole = new iam.Role(this, 'AdminLambdaRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),

@@ -12,6 +12,7 @@ const {
 const { ApiGatewayManagementApiClient, PostToConnectionCommand } = require('@aws-sdk/client-apigatewaymanagementapi');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { v4: uuidv4 } = require('uuid');
+const { CognitoJwtVerifier } = require('aws-jwt-verify');
 
 // Initialize clients once per cold start
 const dynamoClient = new DynamoDBClient({});
@@ -31,7 +32,43 @@ const {
   CRAWLER_BUCKET,
   AWS_REGION,
   AWS_ACCOUNT_ID,
+  COGNITO_USER_POOL_ID,
+  COGNITO_CLIENT_ID,
 } = process.env;
+
+// JWT Verifier for WebSocket authentication (lazy initialized)
+let jwtVerifier = null;
+function getJwtVerifier() {
+  if (!jwtVerifier && COGNITO_USER_POOL_ID && COGNITO_CLIENT_ID) {
+    jwtVerifier = CognitoJwtVerifier.create({
+      userPoolId: COGNITO_USER_POOL_ID,
+      tokenUse: 'id',
+      clientId: COGNITO_CLIENT_ID,
+    });
+  }
+  return jwtVerifier;
+}
+
+// Validate JWT token from query string
+async function validateToken(token) {
+  const verifier = getJwtVerifier();
+  if (!verifier) {
+    // If Cognito not configured, allow connection (public chatbot)
+    return { valid: true, payload: null };
+  }
+
+  if (!token) {
+    return { valid: false, error: 'Missing authentication token' };
+  }
+
+  try {
+    const payload = await verifier.verify(token);
+    return { valid: true, payload };
+  } catch (error) {
+    console.error('Token validation failed:', error.message);
+    return { valid: false, error: 'Invalid or expired token' };
+  }
+}
 
 const SYSTEM_PROMPT = `You are AskUSDA, an official AI assistant for the United States Department of Agriculture, designed to serve farmers, ranchers, and the general public.
 
@@ -459,15 +496,26 @@ async function handleSubmitEscalation(connectionId, body) {
 // ==================== Main Handler ====================
 
 exports.handler = async (event) => {
-  const { requestContext, body } = event;
+  const { requestContext, body, queryStringParameters } = event;
   const { connectionId, routeKey } = requestContext;
 
   console.log(`[${routeKey}] Connection: ${connectionId}`);
 
   try {
     switch (routeKey) {
-      case '$connect':
+      case '$connect': {
+        // Validate JWT token from query string if Cognito is configured
+        const token = queryStringParameters?.token;
+        const validation = await validateToken(token);
+
+        if (!validation.valid) {
+          console.log(`Connection rejected: ${validation.error}`);
+          return { statusCode: 401, body: validation.error };
+        }
+
+        console.log(`Connection authorized${validation.payload ? ` for user: ${validation.payload.sub}` : ' (public)'}`);
         return { statusCode: 200, body: 'Connected' };
+      }
 
       case '$disconnect':
         return { statusCode: 200, body: 'Disconnected' };
