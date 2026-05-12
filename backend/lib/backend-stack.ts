@@ -334,7 +334,7 @@ export class USDAChatbotStack extends cdk.Stack {
       environment: {
         CONVERSATION_TABLE: conversationHistoryTable.tableName,
         ESCALATION_TABLE: escalationTable.tableName,
-        BEDROCK_MODEL_ID: 'amazon.nova-pro-v1:0',
+        BEDROCK_MODEL_ID: 'us.amazon.nova-pro-v1:0',
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
         CRAWLER_BUCKET: crawlerBucketName,

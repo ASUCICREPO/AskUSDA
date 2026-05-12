@@ -292,7 +292,7 @@ async function buildCitations(results) {
 // ==================== Streaming Generation ====================
 
 async function streamResponse(connectionId, userMessage, context) {
-  const modelArn = `arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:inference-profile/us.amazon.nova-pro-v1:0`;
+  const modelArn = `arn:aws:bedrock:${AWS_REGION}:${AWS_ACCOUNT_ID}:inference-profile/${BEDROCK_MODEL_ID}`;
 
   let systemPrompt = SYSTEM_PROMPT;
   if (context) {
