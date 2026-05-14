@@ -269,7 +269,7 @@ export class USDAChatbotStack extends cdk.Stack {
         CRAWLER_CONTAINER_NAME: crawlerContainerName,
         CRAWLER_SUBNETS: crawlerSubnetIds,
         CRAWLER_SG_ID: crawlerSecurityGroupId,
-        CRAWLER_REGION: 'us-west-2',
+        CRAWLER_REGION: cdk.Aws.REGION,
       },
     });
 
@@ -338,7 +338,7 @@ export class USDAChatbotStack extends cdk.Stack {
         KNOWLEDGE_BASE_ID: knowledgeBase.attrKnowledgeBaseId,
         AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
         CRAWLER_BUCKET: crawlerBucketName,
-        CRAWLER_REGION: 'us-west-2',
+        CRAWLER_REGION: cdk.Aws.REGION,
       },
     });
 
