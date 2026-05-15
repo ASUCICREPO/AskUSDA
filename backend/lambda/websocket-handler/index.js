@@ -58,7 +58,9 @@ async function validateToken(token) {
   }
 
   if (!token) {
-    return { valid: false, error: 'Missing authentication token' };
+    // Allow unauthenticated connections for public chatbot
+    // Token is only required for admin features
+    return { valid: true, payload: null };
   }
 
   try {
