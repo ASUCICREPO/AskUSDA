@@ -100,7 +100,7 @@ export class USDAChatbotStack extends cdk.Stack {
 
     knowledgeBaseRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['bedrock:InvokeModel'],
+      actions: ['bedrock:InvokeModel', 'bedrock:Rerank'],
       resources: [`arn:aws:bedrock:${cdk.Aws.REGION}::foundation-model/amazon.rerank-v1:0`],
     }));
 
@@ -339,6 +339,7 @@ export class USDAChatbotStack extends cdk.Stack {
         AWS_ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
         CRAWLER_BUCKET: crawlerBucketName,
         CRAWLER_REGION: cdk.Aws.REGION,
+        ENABLE_RERANKING: 'false',
       },
     });
 

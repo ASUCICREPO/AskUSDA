@@ -34,6 +34,7 @@ const {
   AWS_ACCOUNT_ID,
   COGNITO_USER_POOL_ID,
   COGNITO_CLIENT_ID,
+  ENABLE_RERANKING = 'false',
 } = process.env;
 
 // JWT Verifier for WebSocket authentication (lazy initialized)
@@ -224,22 +225,24 @@ async function applyGuardrail(text) {
 
 async function retrieveFromKB(query) {
   const startTime = Date.now();
+
+  const vectorSearchConfig = { numberOfResults: 25 };
+
+  if (ENABLE_RERANKING === 'true') {
+    vectorSearchConfig.rerankingConfiguration = {
+      type: 'BEDROCK_RERANKING_MODEL',
+      bedrockRerankingConfiguration: {
+        modelConfiguration: {
+          modelArn: `arn:aws:bedrock:${AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
+        },
+      },
+    };
+  }
+
   const response = await bedrockAgent.send(new RetrieveCommand({
     knowledgeBaseId: KNOWLEDGE_BASE_ID,
     retrievalQuery: { text: query },
-    retrievalConfiguration: {
-      vectorSearchConfiguration: {
-        numberOfResults: 25,
-        rerankingConfiguration: {
-          type: 'BEDROCK_RERANKING_MODEL',
-          bedrockRerankingConfiguration: {
-            modelConfiguration: {
-              modelArn: `arn:aws:bedrock:${AWS_REGION}::foundation-model/amazon.rerank-v1:0`,
-            },
-          },
-        },
-      },
-    },
+    retrievalConfiguration: { vectorSearchConfiguration: vectorSearchConfig },
   }));
 
   const retrieveMs = Date.now() - startTime;
